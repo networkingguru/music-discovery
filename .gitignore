@@ -1,0 +1,8 @@
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+run.log
+music_discovery_results.txt
+blocklist.txt
