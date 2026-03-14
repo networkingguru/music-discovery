@@ -6,6 +6,11 @@ This tool reads artists from tracks you've marked as **Loved** or **Favorited** 
 
 ## Introduction by the Designer (NetworkingGuru)
 
+<figure>
+  <img src="./screenshot.png" alt="First run results">
+  <figcaption><em>First run results. Small sample size, but out of the top 15 tracks, I loved 7 of them.</em></figcaption>
+</figure>
+
 So I’ve been searching for a decent music recommender since the 90’s, and have yet to find one that is right more than 10% of the time. Perhaps I am weird and I know I have eclectic taste, but I also thought the existing algos probably sucked. 
 
 Years ago, I found music-map, and was **immediately** struck by the idea that this is how recommendations should be done: Find what the user likes, figure out what is related to that, and offer it. But to maximize relevance, I thought an approach where you took ALL of the user’s favorite artists and correlated them all, you should get a nice sorted list of possibles. 

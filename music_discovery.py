@@ -1033,7 +1033,7 @@ def score_artists(cache, library_artists):
     for lib_artist, similar in cache.items():
         if not isinstance(similar, dict):
             continue  # skip stale flat-list entries
-        weight = math.log(library_artists.get(lib_artist, 1) + 1)
+        weight = math.log(library_artists.get(lib_artist, 1) + 1) ** 0.5
         for candidate, proximity in similar.items():
             if candidate not in library_set:
                 scores[candidate] = scores.get(candidate, 0.0) + weight * proximity

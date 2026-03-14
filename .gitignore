@@ -6,3 +6,5 @@ __pycache__/
 run.log
 music_discovery_results.txt
 blocklist.txt
+compare_scoring.py
+scoring_comparison.txt
