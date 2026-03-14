@@ -4,6 +4,22 @@ Discover new music based on the artists you already love.
 
 This tool reads artists from tracks you've marked as **Loved** or **Favorited** in your Apple Music (or iTunes) library, finds similar artists via [music-map.com](https://www.music-map.com/), scores them by proximity, and filters out well-known artists so only genuine discoveries appear. Optionally builds an Apple Music playlist with top tracks from your discoveries.
 
+## Introduction by the Designer (NetworkingGuru)
+
+So I’ve been searching for a decent music recommender since the 90’s, and have yet to find one that is right more than 10% of the time. Perhaps I am weird and I know I have eclectic taste, but I also thought the existing algos probably sucked. 
+
+Years ago, I found music-map, and was **immediately** struck by the idea that this is how recommendations should be done: Find what the user likes, figure out what is related to that, and offer it. But to maximize relevance, I thought an approach where you took ALL of the user’s favorite artists and correlated them all, you should get a nice sorted list of possibles. 
+
+Anyway, this seemed like a task right at the edge of my programming abilities, so I never got around to it. But then came Claude Code.
+
+To learn Claude Code, I decided to vibe code this shit, but since I DO know Python, I did it in Python, in the hopes I could at least prevent the worst disasters. 😂 Still not sure how that worked, because I haven’t done a lot of looking through the code. But I can tell you, with *absolute* certainty, that it was MUCH more difficult than I thought. And that fact has caused me to re-evaluate my stance on AI.
+
+Claude is fucking amazing. 
+
+See, this fucking thing had more obstacles than anything I have ever seen. At one point, between trying to brute force the Music API and hex editing a database, Claude had music playing through my laptop and was actively walking all of the buttons (through accessibility? Who fucking knows, this shit is WILD man) trying to figure out how to add a goddamn song to a playlist that it couldn’t even SEE. I ended up with a playlist containing 1.3 million files and Claude briefly taking over my TV to my unending amusement and the consternation of my wife. This tool is unstoppable. 
+
+Now, a few warnings before I end, because despite everything you see in this repo, I haven’t written **anything** except this intro. So all code, docs, etc., are all by Claude. Now, I can code, and I can code in Python, and I’m decent at both. But no one should use the —playlist function without a full backup and a priest. Don’t get me wrong: **IT FUCKING WORKS**, at least on my Mac. But this is the part of the script that had my Mac acting like the antagonist of the Exorcist. It made a 1.3 **MILLION** entry playlist that BROKE APPLE MUSIC. It’s fucking evil, but it’s also awesome. And it works, but don’t use it. You have been warned, no refunds, shirt and shoes required, God be with ye.
+
 ## Quick Start
 
 ```bash
