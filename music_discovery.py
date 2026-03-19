@@ -1202,7 +1202,24 @@ def main():
     file_blocklist |= user_blocklist
 
     # ── 2b. Audit previous Music Discovery playlist ────────
-    md_audit = parse_md_playlist(raw_library)
+    # The XML file can be stale — verify playlist exists in Music.app first
+    md_audit = None
+    if platform.system() == "Darwin":
+        out, code = _run_applescript('''
+tell application "Music"
+    if (exists user playlist "Music Discovery") then
+        return "yes"
+    else
+        return "no"
+    end if
+end tell
+''')
+        if code == 0 and out == "yes":
+            md_audit = parse_md_playlist(raw_library)
+        elif code == 0 and out == "no":
+            log.info("No existing Music Discovery playlist found.")
+    else:
+        md_audit = parse_md_playlist(raw_library)
     md_exclusion = set()  # exclude from THIS run only (not saved to blocklist)
     if md_audit is not None:
         md_artists, md_total, md_unplayed = md_audit
