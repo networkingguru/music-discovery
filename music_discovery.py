@@ -449,6 +449,48 @@ def parse_md_playlist(xml_path):
 
     return artists, total, unplayed
 
+def audit_md_playlist(playlist_artists, library_artists, existing_blocklist,
+                      total, unplayed, interactive=True):
+    """Check MD playlist artists against loved artists. Return set of artists to blocklist.
+    - playlist_artists: set of lowercased artist names from the MD playlist.
+    - library_artists: dict {artist: loved_count} from parse_library (only loved artists).
+    - existing_blocklist: set of already-blocklisted names (won't be re-added).
+    - total: total tracks in MD playlist.
+    - unplayed: count of tracks with play count 0.
+    - interactive: if True and >25% unplayed, prompt user. If False, skip blocklisting.
+    Returns set of new artist names to add to blocklist."""
+    unplayed_pct = (unplayed / total) * 100 if total > 0 else 0
+    log.info(f"Music Discovery playlist: {total} tracks, {unplayed} unplayed "
+             f"({unplayed_pct:.0f}%).")
+
+    if unplayed_pct > 25:
+        if not interactive:
+            log.info("Non-interactive mode — skipping playlist audit blocklisting.")
+            return set()
+        answer = input(
+            f"Over 25% of your Music Discovery playlist is unplayed "
+            f"({unplayed}/{total}). Blocklist unheard artists anyway? (y/n): "
+        ).strip().lower()
+        if answer != 'y':
+            log.info("Skipping playlist audit blocklisting.")
+            return set()
+
+    rejected = set()
+    for artist in playlist_artists:
+        if artist in library_artists:
+            continue
+        if artist in existing_blocklist:
+            continue
+        rejected.add(artist)
+
+    if rejected:
+        log.info(f"Blocklisting {len(rejected)} rejected artist(s) from playlist audit: "
+                 f"{sorted(rejected)}")
+    else:
+        log.info("No new artists to blocklist from playlist audit.")
+
+    return rejected
+
 def scrape_musicmap_requests(artist):
     """Fetch similar artists from music-map.com using requests.
     Returns {artist_name: proximity_score} dict (0.0–1.0), or {} on failure.

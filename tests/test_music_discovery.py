@@ -1155,6 +1155,73 @@ def test_parse_md_playlist_artist_names_lowercased():
         assert name == name.lower()
 
 
+def test_audit_blocklists_unfavorited_artists():
+    """Artists in MD playlist with no loved tracks should be blocklisted."""
+    playlist_artists = {"artist b", "artist c"}
+    library_artists = {"artist a": 3, "artist c": 1}  # artist c has loved tracks, b does not
+    existing_blocklist = set()
+    result = md.audit_md_playlist(
+        playlist_artists, library_artists, existing_blocklist,
+        total=10, unplayed=2, interactive=False,
+    )
+    assert "artist b" in result
+    assert "artist c" not in result
+
+def test_audit_skips_already_blocklisted():
+    """Artists already in the blocklist should not be re-added."""
+    playlist_artists = {"artist b", "artist c"}
+    library_artists = {}
+    existing_blocklist = {"artist b"}
+    result = md.audit_md_playlist(
+        playlist_artists, library_artists, existing_blocklist,
+        total=10, unplayed=2, interactive=False,
+    )
+    assert "artist b" not in result
+    assert "artist c" in result
+
+def test_audit_prompts_when_over_25_percent_unplayed(monkeypatch):
+    """If >25% unplayed and user says 'n', return empty set."""
+    monkeypatch.setattr('builtins.input', lambda _: 'n')
+    playlist_artists = {"artist b"}
+    library_artists = {}
+    result = md.audit_md_playlist(
+        playlist_artists, library_artists, set(),
+        total=10, unplayed=5, interactive=True,
+    )
+    assert result == set()
+
+def test_audit_prompts_when_over_25_percent_user_says_yes(monkeypatch):
+    """If >25% unplayed and user says 'y', proceed with blocklisting."""
+    monkeypatch.setattr('builtins.input', lambda _: 'y')
+    playlist_artists = {"artist b"}
+    library_artists = {}
+    result = md.audit_md_playlist(
+        playlist_artists, library_artists, set(),
+        total=10, unplayed=5, interactive=True,
+    )
+    assert "artist b" in result
+
+def test_audit_no_prompt_when_under_25_percent():
+    """If <=25% unplayed, no prompt — just blocklist."""
+    playlist_artists = {"artist b"}
+    library_artists = {}
+    result = md.audit_md_playlist(
+        playlist_artists, library_artists, set(),
+        total=10, unplayed=2, interactive=True,
+    )
+    assert "artist b" in result
+
+def test_audit_skips_in_non_interactive_mode_when_over_25():
+    """Non-interactive + >25% unplayed → safe default: skip blocklisting."""
+    playlist_artists = {"artist b"}
+    library_artists = {}
+    result = md.audit_md_playlist(
+        playlist_artists, library_artists, set(),
+        total=10, unplayed=5, interactive=False,
+    )
+    assert result == set()
+
+
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     """xml_only=True returns tracks without calling setup_playlist."""
     paths = {
