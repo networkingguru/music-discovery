@@ -59,6 +59,34 @@ def _resolve_library_path(cli_override=None):
     return None
 
 
+def auto_export_library(cache_dir):
+    """Export a fresh Music Library XML via AppleScript (macOS only).
+    Exports to cache_dir/Library.xml, overwriting any previous export.
+    Returns the Path on success, or None on failure.
+    Uses a 120-second timeout to handle large libraries."""
+    export_path = pathlib.Path(cache_dir) / "Library.xml"
+    safe_path = _applescript_escape(str(export_path))
+    script = (
+        f'tell application "Music" to export library playlist 1 '
+        f'to POSIX file "{safe_path}"'
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            log.error(f"Library export failed: {result.stderr.strip()}")
+            return None
+        if not export_path.exists():
+            log.error("Library export produced no file.")
+            return None
+        return export_path
+    except subprocess.TimeoutExpired:
+        log.error("Library export timed out (120s). Try --library instead.")
+        return None
+
+
 # ── Constants ──────────────────────────────────────────────
 MUSICMAP_URL = "https://www.music-map.com/{}"
 RATE_LIMIT   = 1.0  # seconds between requests

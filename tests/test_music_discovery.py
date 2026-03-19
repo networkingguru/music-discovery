@@ -1036,6 +1036,38 @@ def test_load_user_blocklist_missing_file(tmp_path):
     assert result == set()
 
 
+def test_auto_export_library_returns_path_on_success(tmp_path):
+    """On macOS, auto_export_library should call osascript and return the export path."""
+    export_path = tmp_path / "Library.xml"
+    export_path.write_bytes(plistlib.dumps({"Tracks": {}}))
+    mock_result = MagicMock(returncode=0, stderr="")
+    with patch('subprocess.run', return_value=mock_result) as mock_run:
+        result = md.auto_export_library(tmp_path)
+    assert result == export_path
+    mock_run.assert_called_once()
+    assert mock_run.call_args[0][0][0] == "osascript"
+
+def test_auto_export_library_returns_none_on_failure(tmp_path):
+    """If osascript returns non-zero, return None."""
+    mock_result = MagicMock(returncode=1, stderr="error")
+    with patch('subprocess.run', return_value=mock_result):
+        result = md.auto_export_library(tmp_path)
+    assert result is None
+
+def test_auto_export_library_returns_none_on_timeout(tmp_path):
+    """If osascript times out, return None."""
+    with patch('subprocess.run', side_effect=subprocess.TimeoutExpired("osascript", 120)):
+        result = md.auto_export_library(tmp_path)
+    assert result is None
+
+def test_auto_export_library_returns_none_when_no_file(tmp_path):
+    """If osascript succeeds but no file is produced, return None."""
+    mock_result = MagicMock(returncode=0, stderr="")
+    with patch('subprocess.run', return_value=mock_result):
+        result = md.auto_export_library(tmp_path)
+    assert result is None
+
+
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     """xml_only=True returns tracks without calling setup_playlist."""
     paths = {
