@@ -706,14 +706,15 @@ def test_setup_playlist_script_references_playlist_name(monkeypatch):
 # ── add_track_to_playlist ─────────────────────────────────
 
 def test_add_track_to_playlist_returns_true_on_ok(monkeypatch):
-    """Returns True when full flow succeeds."""
+    """Returns True when track is found in library and added to playlist."""
     monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
     monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
     responses = iter([
         ("not_found", 0),          # dedup check
         ("Old|||Track", 0),        # snapshot current track
-        ("Creep|||Radiohead", 0),  # poll — different from snapshot, breaks loop
-        ("ok", 0),                 # add to library + playlist
+        ("Creep|||Radiohead", 0),  # poll — different from snapshot
+        ("Creep|||Radiohead", 0),  # track info capture
+        ("ok_library:Creep|||Radiohead", 0),  # library search + playlist add
     ])
     monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
     monkeypatch.setattr("time.sleep", lambda s: None)
@@ -722,6 +723,8 @@ def test_add_track_to_playlist_returns_true_on_ok(monkeypatch):
 def test_add_track_to_playlist_returns_false_when_not_on_apple_music(monkeypatch):
     """Returns False when iTunes Search API finds nothing."""
     monkeypatch.setattr(md, "search_itunes", lambda a, t: None)
+    responses = iter([("not_found", 0)])  # dedup check
+    monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
     assert md.add_track_to_playlist("Nobody", "Fake Song") is False
 
 def test_add_track_to_playlist_raises_on_osascript_failure(monkeypatch):
@@ -732,12 +735,50 @@ def test_add_track_to_playlist_raises_on_osascript_failure(monkeypatch):
         ("not_found", 0),          # dedup check
         ("Old|||Track", 0),        # snapshot
         ("Creep|||Radiohead", 0),  # poll — breaks loop
-        ("", 1),                   # add-to-playlist fails
+        ("Creep|||Radiohead", 0),  # track info capture
+        ("", 1),                   # library search fails
     ])
     monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
     monkeypatch.setattr("time.sleep", lambda s: None)
     with pytest.raises(RuntimeError):
         md.add_track_to_playlist("Radiohead", "Creep")
+
+def test_add_track_not_in_library_uses_split_add(monkeypatch):
+    """When track is not in library, uses separate library-add then playlist-add."""
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
+    responses = iter([
+        ("not_found", 0),          # dedup check
+        ("Old|||Track", 0),        # snapshot
+        ("Creep|||Radiohead", 0),  # poll
+        ("Creep|||Radiohead", 0),  # track info capture
+        ("not_in_library", 0),     # library search — not found
+        ("lib_ok", 0),             # separate library add
+        ("ok_added:Creep|||Radiohead", 0),  # retry search + playlist add
+    ])
+    monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert md.add_track_to_playlist("Radiohead", "Creep") is True
+
+
+def test_add_track_library_add_retries_on_notfound(monkeypatch):
+    """When track added to library but not immediately findable, retries."""
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
+    responses = iter([
+        ("not_found", 0),          # dedup check
+        ("Old|||Track", 0),        # snapshot
+        ("Creep|||Radiohead", 0),  # poll
+        ("Creep|||Radiohead", 0),  # track info capture
+        ("not_in_library", 0),     # library search — not found
+        ("lib_ok", 0),             # separate library add
+        ("notfound_in_library", 0),  # retry 1 — still not indexed
+        ("notfound_in_library", 0),  # retry 2 — still not indexed
+        ("ok_added:Creep|||Radiohead", 0),  # retry 3 — found!
+    ])
+    monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert md.add_track_to_playlist("Radiohead", "Creep") is True
 
 
 # ── write_playlist_xml ────────────────────────────────────
@@ -784,9 +825,14 @@ def test_build_playlist_calls_setup_and_adds_tracks(monkeypatch, tmp_path):
     """build_playlist calls setup_playlist then adds each track."""
     monkeypatch.setattr(md, "setup_playlist", lambda: True)
     monkeypatch.setattr(md, "_stop_playback", lambda: None)
+    add_count = [0]
     add_calls = []
-    monkeypatch.setattr(md, "add_track_to_playlist",
-                        lambda artist, track: add_calls.append((artist, track)) or True)
+    def mock_add(artist, track):
+        add_calls.append((artist, track))
+        add_count[0] += 1
+        return True
+    monkeypatch.setattr(md, "add_track_to_playlist", mock_add)
+    monkeypatch.setattr(md, "_get_playlist_count", lambda: add_count[0])
     monkeypatch.setattr(md, "load_cache", lambda p: {
         "radiohead": [{"name": "Creep", "artist": "Radiohead"}],
     })
@@ -846,6 +892,7 @@ def test_build_playlist_handles_runtime_error_gracefully(monkeypatch, tmp_path):
     """RuntimeError in add_track_to_playlist is caught; track is skipped."""
     monkeypatch.setattr(md, "setup_playlist", lambda: True)
     monkeypatch.setattr(md, "_stop_playback", lambda: None)
+    monkeypatch.setattr(md, "_get_playlist_count", lambda: 0)
     def raise_error(artist, track):
         raise RuntimeError("osascript failed")
     monkeypatch.setattr(md, "add_track_to_playlist", raise_error)
@@ -868,6 +915,7 @@ def test_build_playlist_blocklists_unfindable_artists(monkeypatch, tmp_path):
     """Artists with zero tracks found on Apple Music are added to the blocklist."""
     monkeypatch.setattr(md, "setup_playlist", lambda: True)
     monkeypatch.setattr(md, "_stop_playback", lambda: None)
+    monkeypatch.setattr(md, "_get_playlist_count", lambda: 0)
     # All tracks fail to add
     monkeypatch.setattr(md, "add_track_to_playlist", lambda artist, track: False)
     monkeypatch.setattr(md, "load_cache", lambda p: {
@@ -891,7 +939,12 @@ def test_build_playlist_does_not_blocklist_findable_artists(monkeypatch, tmp_pat
     """Artists with at least one track found are NOT blocklisted."""
     monkeypatch.setattr(md, "setup_playlist", lambda: True)
     monkeypatch.setattr(md, "_stop_playback", lambda: None)
-    monkeypatch.setattr(md, "add_track_to_playlist", lambda artist, track: True)
+    add_count = [0]
+    def mock_add(artist, track):
+        add_count[0] += 1
+        return True
+    monkeypatch.setattr(md, "add_track_to_playlist", mock_add)
+    monkeypatch.setattr(md, "_get_playlist_count", lambda: add_count[0])
     monkeypatch.setattr(md, "load_cache", lambda p: {
         "goodartist": [{"name": "Good Song", "artist": "GoodArtist"}],
     })
@@ -1224,6 +1277,8 @@ def test_main_runs_playlist_audit(tmp_path, monkeypatch):
     monkeypatch.setattr(md, 'detect_scraper', lambda: lambda artist: {})
     # Skip network calls for filter data
     monkeypatch.setattr(md, 'fetch_filter_data', lambda *a, **kw: {})
+    # Mock AppleScript to say playlist exists (so audit runs against XML data)
+    monkeypatch.setattr(md, '_run_applescript', lambda script: ("yes", 0))
 
     md.main()
 
@@ -1275,6 +1330,8 @@ def test_main_excludes_md_playlist_artists_from_results(tmp_path, monkeypatch):
     # Return valid filter data so candidates aren't auto-blocked as non-artists
     monkeypatch.setattr(md, 'fetch_filter_data',
                         lambda *a, **kw: {"listeners": 10000, "debut_year": 2020})
+    # Mock AppleScript to say playlist exists (so audit runs against XML data)
+    monkeypatch.setattr(md, '_run_applescript', lambda script: ("yes", 0))
 
     md.main()
 
@@ -1319,6 +1376,8 @@ def test_main_md_exclusion_does_not_persist_to_blocklist(tmp_path, monkeypatch):
     # Seed blocklist with a known entry so the file is always written
     blocklist_path = cache_dir / "blocklist_cache.json"
     blocklist_path.write_text(json.dumps({"blocked": ["pre-existing"]}))
+    # Mock AppleScript to say playlist exists (so audit runs against XML data)
+    monkeypatch.setattr(md, '_run_applescript', lambda script: ("yes", 0))
 
     md.main()
 
@@ -1328,6 +1387,121 @@ def test_main_md_exclusion_does_not_persist_to_blocklist(tmp_path, monkeypatch):
     assert "pre-existing" in data.get("blocked", []), "seed entry should survive"
     assert "old discovery" not in data.get("blocked", []), \
         "MD playlist exclusion should not persist to blocklist"
+
+
+def test_build_playlist_aborts_on_sync_loop(monkeypatch, tmp_path):
+    """If playlist count exceeds expected, build_playlist detects sync loop and aborts."""
+    monkeypatch.setattr(md, "setup_playlist", lambda: True)
+    monkeypatch.setattr(md, "_stop_playback", lambda: None)
+    deleted = []
+    orig_run = md._run_applescript
+    def mock_run(script):
+        if "delete user playlist" in script:
+            deleted.append(True)
+            return ("", 0)
+        return orig_run(script)
+    monkeypatch.setattr(md, "_run_applescript", mock_run)
+
+    add_count = [0]
+    def mock_add(artist, track):
+        add_count[0] += 1
+        return True
+    monkeypatch.setattr(md, "add_track_to_playlist", mock_add)
+    # Simulate sync loop: playlist count grows much faster than adds
+    monkeypatch.setattr(md, "_get_playlist_count", lambda: add_count[0] * 100)
+
+    # Need enough artists/tracks to trigger the check (every 10 adds)
+    cache = {}
+    for i in range(20):
+        name = f"artist{i}"
+        cache[name] = [{"name": f"Song{i}", "artist": name.title()}]
+    monkeypatch.setattr(md, "load_cache", lambda p: cache)
+    monkeypatch.setattr(md, "save_cache", lambda c, p: None)
+    monkeypatch.setattr(md, "fetch_top_tracks", lambda a, k: [])
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    paths = md._build_paths()
+    ranked = [(10.0 - i * 0.1, f"artist{i}") for i in range(20)]
+    success, _ = md.build_playlist(ranked, "fake_key", paths)
+    assert success is False
+    assert len(deleted) > 0  # playlist was deleted
+
+
+def test_build_playlist_final_verify_catches_late_sync(monkeypatch, tmp_path):
+    """Final verification catches sync issues that develop after adds complete."""
+    monkeypatch.setattr(md, "setup_playlist", lambda: True)
+    monkeypatch.setattr(md, "_stop_playback", lambda: None)
+    deleted = []
+    orig_run = md._run_applescript
+    def mock_run(script):
+        if "delete user playlist" in script:
+            deleted.append(True)
+            return ("", 0)
+        return orig_run(script)
+    monkeypatch.setattr(md, "_run_applescript", mock_run)
+
+    monkeypatch.setattr(md, "add_track_to_playlist", lambda a, t: True)
+    # Final verify sees a huge count — simulates late sync explosion
+    monkeypatch.setattr(md, "_get_playlist_count", lambda: 5000)
+
+    cache = {"artist0": [{"name": "Song0", "artist": "Artist0"}]}
+    monkeypatch.setattr(md, "load_cache", lambda p: cache)
+    monkeypatch.setattr(md, "save_cache", lambda c, p: None)
+    monkeypatch.setattr(md, "fetch_top_tracks", lambda a, k: [])
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    paths = md._build_paths()
+    ranked = [(10.0, "artist0")]
+    success, _ = md.build_playlist(ranked, "fake_key", paths)
+    assert success is False
+    assert len(deleted) > 0
+
+
+def test_add_track_no_combined_library_and_playlist(monkeypatch):
+    """Verify library-add and playlist-add are never in the same AppleScript call."""
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
+    scripts = []
+    responses = iter([
+        ("not_found", 0),
+        ("Old|||Track", 0),
+        ("Creep|||Radiohead", 0),
+        ("Creep|||Radiohead", 0),
+        ("not_in_library", 0),  # library search — not found
+        ("lib_ok", 0),          # separate library add
+        ("ok_added:Creep|||Radiohead", 0),  # retry search + playlist add
+    ])
+    def capture_script(script):
+        scripts.append(script)
+        return next(responses)
+    monkeypatch.setattr(md, "_run_applescript", capture_script)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    md.add_track_to_playlist("Radiohead", "Creep")
+    # No single script should contain BOTH library add AND playlist add
+    for script in scripts:
+        has_lib_add = 'duplicate ct to source "Library"' in script
+        has_pl_add = 'duplicate t to user playlist' in script
+        assert not (has_lib_add and has_pl_add), \
+            "Library-add and playlist-add must be in separate AppleScript calls"
+
+
+def test_add_track_library_path(monkeypatch):
+    """When track IS in library, add_track_to_playlist uses library copy."""
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
+    responses = iter([
+        ("not_found", 0),
+        ("Old|||Track", 0),
+        ("Creep|||Radiohead", 0),
+        ("Creep|||Radiohead", 0),
+        ("ok_library:Creep|||Radiohead", 0),
+    ])
+    monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    result = md.add_track_to_playlist("Radiohead", "Creep")
+    assert result is True
 
 
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):

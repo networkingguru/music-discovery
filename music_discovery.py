@@ -863,9 +863,28 @@ player.stop;
     _run_jxa(script)
 
 
+def _get_playlist_count():
+    """Return the current track count of the Music Discovery playlist, or -1 on error."""
+    out, code = _run_applescript('''
+tell application "Music"
+    if (exists user playlist "Music Discovery") then
+        return count of tracks of user playlist "Music Discovery"
+    else
+        return -1
+    end if
+end tell
+''')
+    if code != 0:
+        return -1
+    try:
+        return int(out)
+    except ValueError:
+        return -1
+
+
 def add_track_to_playlist(artist, track_name):
-    """Search Apple Music catalog for a track, add it to the user's library,
-    then add it to the 'Music Discovery' playlist.
+    """Search Apple Music catalog for a track and add it to the
+    'Music Discovery' playlist.
     Uses: iTunes Search API → MediaPlayer framework → AppleScript.
     Returns True if added, False if not found or already in playlist."""
     safe_artist = _applescript_escape(artist)
@@ -933,20 +952,79 @@ end tell
         log.debug(f"  Track did not change — skipping: {artist} — {track_name}")
         return False
 
-    # Step 5: Add current track to library, search for library copy, add to playlist
-    script = f'''
+    # Step 5: Capture track info from current track
+    info_script = '''
 tell application "Music"
     try
         set ct to current track
-        set trackName to name of ct
-        set trackArtist to artist of ct
-        duplicate ct to source "Library"
-        delay 1
-        set sr to search library playlist 1 for trackName
+        return (name of ct) & "|||" & (artist of ct)
+    on error
+        return ""
+    end try
+end tell
+'''
+    track_info, _ = _run_applescript(info_script)
+    if not track_info or "|||" not in track_info:
+        log.debug(f"  Could not read current track info")
+        return False
+    ct_name, ct_artist = track_info.split("|||", 1)
+    safe_ct_name = _applescript_escape(ct_name)
+    safe_ct_artist = _applescript_escape(ct_artist)
+
+    # Step 6: Search library for existing copy → add to playlist.
+    # If not in library, add to library first (separate call), wait,
+    # then search again. Splitting library-add from playlist-add into
+    # separate AppleScript calls prevents iCloud Music Library sync loops.
+    lib_script = f'''
+tell application "Music"
+    try
+        set sr to search library playlist 1 for "{safe_ct_name}"
         repeat with t in sr
-            if artist of t is trackArtist then
+            if artist of t is "{safe_ct_artist}" then
                 duplicate t to user playlist "Music Discovery"
-                return "ok"
+                return "ok_library:{safe_ct_name}|||{safe_ct_artist}"
+            end if
+        end repeat
+        return "not_in_library"
+    on error e
+        return "error: " & e
+    end try
+end tell
+'''
+    out, code = _run_applescript(lib_script)
+    log.debug(f"  library search result: {out}")
+    if code != 0:
+        raise RuntimeError(f"osascript failed (code {code})")
+    if out.startswith("ok"):
+        return True
+
+    # Track not in library — add it via separate calls to avoid sync loop.
+    # Step 6b: Add current track to library (separate AppleScript call)
+    add_lib_script = '''
+tell application "Music"
+    try
+        set ct to current track
+        duplicate ct to source "Library"
+        return "lib_ok"
+    on error e
+        return "lib_error: " & e
+    end try
+end tell
+'''
+    lib_out, _ = _run_applescript(add_lib_script)
+    log.debug(f"  library add result: {lib_out}")
+    if not lib_out.startswith("lib_ok"):
+        return False
+
+    # Step 6c: Poll until track appears in library, then add to playlist
+    playlist_script = f'''
+tell application "Music"
+    try
+        set sr to search library playlist 1 for "{safe_ct_name}"
+        repeat with t in sr
+            if artist of t is "{safe_ct_artist}" then
+                duplicate t to user playlist "Music Discovery"
+                return "ok_added:{safe_ct_name}|||{safe_ct_artist}"
             end if
         end repeat
         return "notfound_in_library"
@@ -955,10 +1033,18 @@ tell application "Music"
     end try
 end tell
 '''
-    out, code = _run_applescript(script)
-    if code != 0:
-        raise RuntimeError(f"osascript failed (code {code})")
-    return out == "ok"
+    for attempt in range(6):  # up to ~15 seconds total
+        time.sleep(2 + attempt)  # 2, 3, 4, 5, 6, 7s — increasing backoff
+        out, code = _run_applescript(playlist_script)
+        log.debug(f"  playlist add attempt {attempt + 1}: {out}")
+        if code != 0:
+            raise RuntimeError(f"osascript failed (code {code})")
+        if out.startswith("ok"):
+            return True
+        if not out.startswith("notfound"):
+            return False  # real error, don't retry
+    log.debug(f"  Track not found in library after retries: {ct_name} — {ct_artist}")
+    return False
 
 
 def write_playlist_xml(tracks, xml_path):
@@ -1050,6 +1136,8 @@ def build_playlist(ranked, api_key, paths, xml_only=False):
     added = 0
     skipped = 0
     attempted = 0
+    since_last_check = 0
+    sync_abort = False
     unfindable = set()  # artists where no tracks could be added
     for i, artist in enumerate(top_artists, 1):
         artist_tracks = [t for t in all_tracks if t["artist"].strip().lower() == artist]
@@ -1066,6 +1154,7 @@ def build_playlist(ranked, api_key, paths, xml_only=False):
                 if add_track_to_playlist(track["artist"], track["name"]):
                     added += 1
                     artist_added += 1
+                    since_last_check += 1
                 else:
                     skipped += 1
                     log.info(f"  Not found: {track['artist']} — {track['name']}")
@@ -1077,8 +1166,44 @@ def build_playlist(ranked, api_key, paths, xml_only=False):
         if added >= MAX_PLAYLIST_TRACKS:
             break
 
+        # ── Sync-loop guard: verify actual playlist size ──────
+        if since_last_check >= 10:
+            since_last_check = 0
+            actual = _get_playlist_count()
+            if actual < 0:
+                log.error("Could not verify playlist count — aborting.")
+                sync_abort = True
+                break
+            if actual > added + 10:
+                log.error(f"SYNC ISSUE: Playlist has {actual} tracks but only "
+                          f"{added} were added. Stopping to prevent runaway "
+                          f"duplication.")
+                sync_abort = True
+                break
+
     # Stop playback so the user isn't left listening to the last track
     _stop_playback()
+
+    if sync_abort:
+        log.error("Deleting playlist due to iCloud sync loop.")
+        _run_applescript(
+            'tell application "Music" to delete user playlist "Music Discovery"'
+        )
+        return False, all_tracks
+
+    # Final verification: check for unexpected playlist growth
+    final_count = _get_playlist_count()
+    if final_count < 0:
+        log.warning("Could not verify final playlist count.")
+    elif final_count > added + 5:
+        log.error(f"SYNC ISSUE: Final playlist has {final_count} tracks but only "
+                  f"{added} were added. Deleting to prevent duplication.")
+        _run_applescript(
+            'tell application "Music" to delete user playlist "Music Discovery"'
+        )
+        return False, all_tracks
+    else:
+        log.info(f"Playlist verified: {final_count} tracks (expected ~{added}).")
 
     # Blocklist artists with zero tracks found so we skip them in future runs
     if unfindable:
