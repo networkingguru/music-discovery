@@ -230,11 +230,11 @@ def test_score_artists_sorted_descending():
     assert scores == sorted(scores, reverse=True)
 
 def test_score_artists_formula():
-    """Verify exact formula: score = log(loved+1) * proximity."""
+    """Verify exact formula: score = sqrt(log(loved+1)) * proximity."""
     cache = {"a": {"x": 0.5}}
     library = {"a": 3}
     ranked = md.score_artists(cache, library)
-    expected = math.log(3 + 1) * 0.5
+    expected = math.log(3 + 1) ** 0.5 * 0.5
     assert abs(ranked[0][0] - expected) < 1e-9
 
 def test_score_artists_skips_stale_entries():
@@ -249,7 +249,7 @@ def test_score_artists_skips_stale_entries():
     assert "x" in names
     # score for x should only come from "b" (the fresh entry)
     scores = {name: s for s, name in ranked}
-    expected = math.log(1 + 1) * 0.9
+    expected = math.log(1 + 1) ** 0.5 * 0.9
     assert abs(scores["x"] - expected) < 1e-9
 
 def test_fetch_filter_data_returns_listeners_and_debut():
@@ -1188,6 +1188,101 @@ def test_main_runs_playlist_audit(tmp_path, monkeypatch):
     assert blocklist_path.exists(), "blocklist_cache.json should have been created"
     data = json.loads(blocklist_path.read_text())
     assert "rejected" in data.get("blocked", [])
+
+
+def test_main_excludes_md_playlist_artists_from_results(tmp_path, monkeypatch):
+    """Artists from an existing MD playlist are excluded from current run results,
+    even without permanent blocklisting (e.g. when >25% unplayed, non-interactive)."""
+    plist_data = {
+        "Tracks": {
+            "1": {"Artist": "Loved One", "Loved": True},
+            "2": {"Artist": "Old Discovery", "Name": "Song", "Play Count": 0},
+            "3": {"Artist": "Another Old", "Name": "Song2", "Play Count": 0},
+        },
+        "Playlists": [
+            {"Name": "Music Discovery", "Playlist Items": [
+                {"Track ID": 2}, {"Track ID": 3},
+            ]},
+        ],
+    }
+    lib_path = tmp_path / "Library.xml"
+    lib_path.write_bytes(plistlib.dumps(plist_data))
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    # Seed the scrape cache so "old discovery" and "another old" appear as candidates
+    scrape_cache = {
+        "loved one": {
+            "old discovery": 0.9,
+            "another old": 0.8,
+            "brand new": 0.7,
+        }
+    }
+    (cache_dir / "music_map_cache.json").write_text(json.dumps(scrape_cache))
+
+    monkeypatch.setattr('sys.argv', ['music_discovery.py', '--library', str(lib_path)])
+    monkeypatch.setenv('CACHE_DIR', str(cache_dir))
+    monkeypatch.setenv('OUTPUT_DIR', str(cache_dir))
+    monkeypatch.setenv('LASTFM_API_KEY', 'dummy_key_for_test_00000000000')
+    monkeypatch.setattr(md, 'prompt_for_api_key', lambda *a, **kw: None)
+    monkeypatch.setattr(md, 'detect_scraper', lambda: lambda artist: {})
+    # Return valid filter data so candidates aren't auto-blocked as non-artists
+    monkeypatch.setattr(md, 'fetch_filter_data',
+                        lambda *a, **kw: {"listeners": 10000, "debut_year": 2020})
+
+    md.main()
+
+    # Read the output results
+    results_path = cache_dir / "music_discovery_results.txt"
+    assert results_path.exists()
+    content = results_path.read_text()
+    # MD playlist artists should NOT appear in results
+    assert "old discovery" not in content
+    assert "another old" not in content
+    # Genuinely new artists should still appear
+    assert "brand new" in content
+
+
+def test_main_md_exclusion_does_not_persist_to_blocklist(tmp_path, monkeypatch):
+    """MD playlist exclusion is per-run only — artists are NOT saved to blocklist."""
+    plist_data = {
+        "Tracks": {
+            "1": {"Artist": "Loved One", "Loved": True},
+            "2": {"Artist": "Old Discovery", "Name": "Song", "Play Count": 0},
+        },
+        "Playlists": [
+            {"Name": "Music Discovery", "Playlist Items": [{"Track ID": 2}]},
+        ],
+    }
+    lib_path = tmp_path / "Library.xml"
+    lib_path.write_bytes(plistlib.dumps(plist_data))
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    monkeypatch.setattr('sys.argv', ['music_discovery.py', '--library', str(lib_path)])
+    monkeypatch.setenv('CACHE_DIR', str(cache_dir))
+    monkeypatch.setenv('OUTPUT_DIR', str(cache_dir))
+    monkeypatch.setenv('LASTFM_API_KEY', 'dummy_key_for_test_00000000000')
+    monkeypatch.setattr(md, 'prompt_for_api_key', lambda *a, **kw: None)
+    monkeypatch.setattr(md, 'detect_scraper', lambda: lambda artist: {})
+    # Return valid filter data so auto-blocklist detection doesn't interfere
+    monkeypatch.setattr(md, 'fetch_filter_data',
+                        lambda *a, **kw: {"listeners": 10000, "debut_year": 2020})
+
+    # Seed blocklist with a known entry so the file is always written
+    blocklist_path = cache_dir / "blocklist_cache.json"
+    blocklist_path.write_text(json.dumps({"blocked": ["pre-existing"]}))
+
+    md.main()
+
+    # "old discovery" was excluded from results but should NOT be in the blocklist
+    assert blocklist_path.exists()
+    data = json.loads(blocklist_path.read_text())
+    assert "pre-existing" in data.get("blocked", []), "seed entry should survive"
+    assert "old discovery" not in data.get("blocked", []), \
+        "MD playlist exclusion should not persist to blocklist"
 
 
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):

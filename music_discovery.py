@@ -1188,8 +1188,10 @@ def main():
 
     # ── 2b. Audit previous Music Discovery playlist ────────
     md_audit = parse_md_playlist(raw_library)
+    md_exclusion = set()  # exclude from THIS run only (not saved to blocklist)
     if md_audit is not None:
         md_artists, md_total, md_unplayed = md_audit
+        md_exclusion = md_artists  # always skip previously-discovered artists
         interactive = sys.stdin.isatty()
         newly_rejected = audit_md_playlist(
             md_artists, library_artists, file_blocklist,
@@ -1268,7 +1270,7 @@ def main():
 
     # ── 7. Filter and output ───────────────────────────────
     log.info("\nFiltering and writing results...")
-    ranked = filter_candidates(scored, filter_cache, file_blocklist)
+    ranked = filter_candidates(scored, filter_cache, file_blocklist | md_exclusion)
     write_output(ranked, len(library_artists), paths["output"])
 
     # ── 8. Build playlist (optional) ───────────────────────
