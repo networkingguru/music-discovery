@@ -20,7 +20,7 @@ Two changes:
 
 On macOS, before any parsing:
 
-1. Use AppleScript to export the full library XML to a temp location in the cache directory.
+1. Use AppleScript to export the full library XML to a fixed path in the cache directory (`~/.cache/music_discovery/Library.xml`, overwritten each run). Use a longer timeout than the default 30s to handle large libraries.
 2. Use that fresh export as the library source.
 3. The `--library` CLI flag still works as a manual override — if provided, skip auto-export.
 4. On Windows/Linux, fall back to current behavior (auto-detect path or `--library` flag).
@@ -38,8 +38,9 @@ After parsing the fresh XML, before scoring:
    - `"Over 25% of your Music Discovery playlist is unplayed. Blocklist unheard artists anyway? (y/n)"`
    - `y` → proceed with blocklisting.
    - `n` → skip blocklisting, continue with discovery normally.
-5. **Identify rejected artists**: for each unique artist in the MD playlist, check if they have *any* favorited/loved tracks anywhere in the full library. If zero → add to the blocklist.
-6. Write updated blocklist file, then continue with the normal discovery pipeline.
+5. **Identify rejected artists**: for each unique artist in the MD playlist (lowercased for comparison), check if they exist in the `library_artists` dict returned by `parse_library()`. If absent (zero loved tracks) → add to the blocklist.
+6. Write rejected artists to `blocklist_cache.json` via `save_blocklist()` (the auto-detected blocklist, not the user-managed `blocklist.txt`).
+7. Log the audit results: playlist size, unplayed count, number of artists blocklisted.
 
 Blocklisted artists are filtered out during scoring/filtering by the existing `filter_candidates` mechanism.
 
@@ -48,7 +49,7 @@ Blocklisted artists are filtered out during scoring/filtering by the existing `f
 - Scoring, scraping, Last.fm filtering, playlist building — all unchanged.
 - `--playlist` flag behavior stays the same.
 - `blocklist.txt` (user-managed) and `blocklist_cache.json` (auto-detected) continue working.
-- Windows falls back to current XML behavior (no auto-export, no playlist audit).
+- Windows/Linux: no auto-export (no AppleScript). Playlist audit still works if the user provides an XML that contains the MD playlist.
 
 ## Data Flow
 
@@ -74,3 +75,5 @@ macOS run:
 - **User says "n" to safety check**: blocklist step is skipped, everything else runs normally.
 - **Artist favorited after playlist was built**: they now have loved tracks → not blocklisted. Working as intended.
 - **Auto-export fails**: log error, fall back to existing XML at default path (same as current behavior).
+- **Non-interactive mode**: if stdin is not a TTY, skip the safety prompt and default to not blocklisting (safe default).
+- **Audit ordering**: the audit reads the old playlist from the XML snapshot. Later, if `--playlist` runs, `setup_playlist()` replaces it with a new one. No conflict since the XML is a point-in-time export.
