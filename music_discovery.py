@@ -27,9 +27,9 @@ import requests
 from bs4 import BeautifulSoup
 
 # ── Path Resolution ────────────────────────────────────────
-def _resolve_library_path(cli_override=None, cache_dir=None):
+def _resolve_library_path(cli_override=None):
     """Resolve the Music Library XML path.
-    Priority: CLI flag > auto-export (macOS) > platform auto-detect.
+    Priority: CLI flag > platform auto-detect.
     Returns a pathlib.Path if found, or None if not found (with helpful log message)."""
     if cli_override:
         p = pathlib.Path(cli_override).expanduser().resolve()
@@ -39,16 +39,6 @@ def _resolve_library_path(cli_override=None, cache_dir=None):
         return None
 
     system = platform.system()
-
-    # macOS: try auto-export first
-    if system == "Darwin" and cache_dir is not None:
-        log.info("Auto-exporting Music Library...")
-        exported = auto_export_library(cache_dir)
-        if exported:
-            log.info(f"Fresh library exported to: {exported}")
-            return exported
-        log.warning("Auto-export failed — falling back to existing XML.")
-
     if system == "Darwin":
         default = pathlib.Path.home() / "Music/Music/Music Library.xml"
         export_hint = 'Open Music.app → File → Library → Export Library…'
@@ -67,34 +57,6 @@ def _resolve_library_path(cli_override=None, cache_dir=None):
     log.error(f"  {export_hint}")
     log.error("  Or specify the path manually: python music_discovery.py --library /path/to/Library.xml")
     return None
-
-
-def auto_export_library(cache_dir):
-    """Export a fresh Music Library XML via AppleScript (macOS only).
-    Exports to cache_dir/Library.xml, overwriting any previous export.
-    Returns the Path on success, or None on failure.
-    Uses a 120-second timeout to handle large libraries."""
-    export_path = pathlib.Path(cache_dir) / "Library.xml"
-    safe_path = _applescript_escape(str(export_path))
-    script = (
-        f'tell application "Music" to export library playlist 1 '
-        f'to POSIX file "{safe_path}"'
-    )
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True, text=True, timeout=120,
-        )
-        if result.returncode != 0:
-            log.error(f"Library export failed: {result.stderr.strip()}")
-            return None
-        if not export_path.exists():
-            log.error("Library export produced no file.")
-            return None
-        return export_path
-    except subprocess.TimeoutExpired:
-        log.error("Library export timed out (120s). Try --library instead.")
-        return None
 
 
 # ── Constants ──────────────────────────────────────────────
@@ -1204,7 +1166,7 @@ def main():
     paths = _build_paths()
 
     # ── 1. Parse library ───────────────────────────────────
-    library_path = _resolve_library_path(args.library, cache_dir=paths["cache"].parent)
+    library_path = _resolve_library_path(args.library)
     if library_path is None:
         return
 
