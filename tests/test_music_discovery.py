@@ -864,6 +864,51 @@ def test_build_playlist_handles_runtime_error_gracefully(monkeypatch, tmp_path):
     assert len(tracks) > 0
 
 
+def test_build_playlist_blocklists_unfindable_artists(monkeypatch, tmp_path):
+    """Artists with zero tracks found on Apple Music are added to the blocklist."""
+    monkeypatch.setattr(md, "setup_playlist", lambda: True)
+    monkeypatch.setattr(md, "_stop_playback", lambda: None)
+    # All tracks fail to add
+    monkeypatch.setattr(md, "add_track_to_playlist", lambda artist, track: False)
+    monkeypatch.setattr(md, "load_cache", lambda p: {
+        "unfindable": [{"name": "Ghost Song", "artist": "Unfindable"}],
+    })
+    monkeypatch.setattr(md, "save_cache", lambda c, p: None)
+    monkeypatch.setattr(md, "fetch_top_tracks", lambda a, k: [])
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    paths = md._build_paths()
+    ranked = [(10.0, "unfindable")]
+    success, _ = md.build_playlist(ranked, "fake_key", paths)
+    assert success is True
+
+    blocklist = md.load_blocklist(paths["blocklist"])
+    assert "unfindable" in blocklist
+
+
+def test_build_playlist_does_not_blocklist_findable_artists(monkeypatch, tmp_path):
+    """Artists with at least one track found are NOT blocklisted."""
+    monkeypatch.setattr(md, "setup_playlist", lambda: True)
+    monkeypatch.setattr(md, "_stop_playback", lambda: None)
+    monkeypatch.setattr(md, "add_track_to_playlist", lambda artist, track: True)
+    monkeypatch.setattr(md, "load_cache", lambda p: {
+        "goodartist": [{"name": "Good Song", "artist": "GoodArtist"}],
+    })
+    monkeypatch.setattr(md, "save_cache", lambda c, p: None)
+    monkeypatch.setattr(md, "fetch_top_tracks", lambda a, k: [])
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setenv("CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path))
+    paths = md._build_paths()
+    ranked = [(10.0, "goodartist")]
+    success, _ = md.build_playlist(ranked, "fake_key", paths)
+    assert success is True
+
+    blocklist = md.load_blocklist(paths["blocklist"])
+    assert "goodartist" not in blocklist
+
+
 import hashlib
 
 

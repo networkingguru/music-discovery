@@ -70,7 +70,8 @@ LASTFM_API_URL      = "http://ws.audioscrobbler.com/2.0/"
 MUSICBRAINZ_API_URL = "https://musicbrainz.org/ws/2/artist/{}"
 POPULAR_THRESHOLD   = 50_000
 CLASSIC_YEAR        = 2006
-TRACKS_PER_ARTIST   = 3
+TRACKS_PER_ARTIST   = 2
+PLAYLIST_ARTISTS    = 100  # number of top-ranked artists to include in playlist
 MAX_PLAYLIST_TRACKS = 500  # hard cap — abort if playlist exceeds this
 MD_PLAYLIST_NAME    = "Music Discovery"
 UNPLAYED_WARN_PCT   = 25   # prompt user if more than this % of MD playlist is unplayed
@@ -996,8 +997,8 @@ def _normalize_track_name(name):
 
 
 def build_playlist(ranked, api_key, paths, xml_only=False):
-    """Fetch top tracks for top-50 artists, then build an Apple Music playlist."""
-    top_artists = [name for _, name in ranked[:50]]
+    """Fetch top tracks for top-ranked artists, then build an Apple Music playlist."""
+    top_artists = [name for _, name in ranked[:PLAYLIST_ARTISTS]]
     if not top_artists:
         log.info("No artists in results — skipping playlist generation.")
         return True, []
@@ -1049,11 +1050,13 @@ def build_playlist(ranked, api_key, paths, xml_only=False):
     added = 0
     skipped = 0
     attempted = 0
+    unfindable = set()  # artists where no tracks could be added
     for i, artist in enumerate(top_artists, 1):
         artist_tracks = [t for t in all_tracks if t["artist"].strip().lower() == artist]
         if not artist_tracks:
             continue
         log.info(f"[{i}/{len(top_artists)}] Adding tracks for: {artist}")
+        artist_added = 0
         for track in artist_tracks:
             if added >= MAX_PLAYLIST_TRACKS:
                 log.info(f"\nHard cap reached ({MAX_PLAYLIST_TRACKS} tracks). Stopping.")
@@ -1062,17 +1065,29 @@ def build_playlist(ranked, api_key, paths, xml_only=False):
             try:
                 if add_track_to_playlist(track["artist"], track["name"]):
                     added += 1
+                    artist_added += 1
                 else:
                     skipped += 1
                     log.info(f"  Not found: {track['artist']} — {track['name']}")
             except RuntimeError as e:
                 log.error(f"  Error adding track: {e}")
                 skipped += 1
+        if artist_added == 0:
+            unfindable.add(artist)
         if added >= MAX_PLAYLIST_TRACKS:
             break
 
     # Stop playback so the user isn't left listening to the last track
     _stop_playback()
+
+    # Blocklist artists with zero tracks found so we skip them in future runs
+    if unfindable:
+        existing = load_blocklist(paths["blocklist"])
+        new_blocked = unfindable - existing
+        if new_blocked:
+            log.info(f"Blocklisting {len(new_blocked)} artist(s) not found on Apple Music: "
+                     f"{sorted(new_blocked)}")
+            save_blocklist(existing | new_blocked, paths["blocklist"])
 
     log.info(f"\nPlaylist 'Music Discovery' created with {added}/{attempted} tracks"
              f" ({skipped} not found on Apple Music).")
