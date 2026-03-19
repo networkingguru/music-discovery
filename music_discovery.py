@@ -72,6 +72,8 @@ POPULAR_THRESHOLD   = 50_000
 CLASSIC_YEAR        = 2006
 TRACKS_PER_ARTIST   = 3
 MAX_PLAYLIST_TRACKS = 500  # hard cap — abort if playlist exceeds this
+MD_PLAYLIST_NAME    = "Music Discovery"
+UNPLAYED_WARN_PCT   = 25   # prompt user if more than this % of MD playlist is unplayed
 MB_USER_AGENT       = "MusicDiscoveryTool/1.0 (https://github.com/networkingguru/music-discovery)"
 
 # Artists/non-artists that slip through the listener-count filter due to missing
@@ -338,12 +340,12 @@ def _build_paths():
     }
 
 
-def parse_library(xml_path):
-    """Parse Music Library XML, return {artist_name: loved_track_count} dict.
-    Artists are lowercase. Only includes tracks that are Loved or Favorited."""
+def _load_library_plist(xml_path):
+    """Load and return the raw plist dict from a Music Library XML file.
+    Raises on failure (FileNotFoundError, parse errors)."""
     try:
         with open(xml_path, "rb") as f:
-            library = plistlib.load(f)
+            return plistlib.load(f)
     except FileNotFoundError:
         log.error(f"Library file not found: {xml_path}")
         raise
@@ -351,6 +353,10 @@ def parse_library(xml_path):
         log.error(f"Could not read library file: {e}")
         raise
 
+def parse_library(xml_path):
+    """Parse Music Library XML, return {artist_name: loved_track_count} dict.
+    Artists are lowercase. Only includes tracks that are Loved or Favorited."""
+    library = _load_library_plist(xml_path)
     tracks = library.get("Tracks", {})
     counts = {}
     for track in tracks.values():
@@ -363,25 +369,19 @@ def parse_library(xml_path):
             artist = artist.strip().lower()
             if artist:
                 counts[artist] = counts.get(artist, 0) + 1
-    return counts
+    return counts, library
 
-def parse_md_playlist(xml_path):
-    """Find the 'Music Discovery' playlist in the XML and return audit data.
+def parse_md_playlist(library):
+    """Find the 'Music Discovery' playlist in a parsed library dict.
     Returns (artist_set, total_tracks, unplayed_count) or None if no MD playlist.
     artist_set contains lowercased artist names from the playlist.
     A track is 'unplayed' if Play Count is 0 or absent."""
-    try:
-        with open(xml_path, "rb") as f:
-            library = plistlib.load(f)
-    except Exception:
-        return None
-
     tracks_dict = library.get("Tracks", {})
     playlists = library.get("Playlists", [])
 
     md_playlist = None
     for pl in playlists:
-        if pl.get("Name") == "Music Discovery":
+        if pl.get("Name") == MD_PLAYLIST_NAME:
             md_playlist = pl
             break
     if md_playlist is None:
@@ -425,25 +425,19 @@ def audit_md_playlist(playlist_artists, library_artists, existing_blocklist,
     log.info(f"Music Discovery playlist: {total} tracks, {unplayed} unplayed "
              f"({unplayed_pct:.0f}%).")
 
-    if unplayed_pct > 25:
+    if unplayed_pct > UNPLAYED_WARN_PCT:
         if not interactive:
             log.info("Non-interactive mode — skipping playlist audit blocklisting.")
             return set()
         answer = input(
-            f"Over 25% of your Music Discovery playlist is unplayed "
+            f"Over {UNPLAYED_WARN_PCT}% of your Music Discovery playlist is unplayed "
             f"({unplayed}/{total}). Blocklist unheard artists anyway? (y/n): "
         ).strip().lower()
         if answer != 'y':
             log.info("Skipping playlist audit blocklisting.")
             return set()
 
-    rejected = set()
-    for artist in playlist_artists:
-        if artist in library_artists:
-            continue
-        if artist in existing_blocklist:
-            continue
-        rejected.add(artist)
+    rejected = playlist_artists - set(library_artists) - existing_blocklist
 
     if rejected:
         log.info(f"Blocklisting {len(rejected)} rejected artist(s) from playlist audit: "
@@ -1181,7 +1175,7 @@ def main():
         log.info("\nRunning without Last.fm — results will include well-known artists")
         log.info("that would normally be filtered out.\n")
 
-    library_artists = parse_library(library_path)
+    library_artists, raw_library = parse_library(library_path)
     log.info(f"Found {len(library_artists)} unique loved/favorited artists.\n")
 
     # ── 2. Load caches ─────────────────────────────────────
@@ -1193,7 +1187,7 @@ def main():
     file_blocklist |= user_blocklist
 
     # ── 2b. Audit previous Music Discovery playlist ────────
-    md_audit = parse_md_playlist(library_path)
+    md_audit = parse_md_playlist(raw_library)
     if md_audit is not None:
         md_artists, md_total, md_unplayed = md_audit
         interactive = sys.stdin.isatty()

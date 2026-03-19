@@ -27,27 +27,27 @@ def write_temp_plist(data):
 
 def test_parse_library_loved():
     path = write_temp_plist({"Tracks": {"1": {"Artist": "Tom Waits", "Loved": True}}})
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert "tom waits" in result
 
 def test_parse_library_favorited():
     path = write_temp_plist({"Tracks": {"1": {"Artist": "Radiohead", "Favorited": True}}})
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert "radiohead" in result
 
 def test_parse_library_deduplicates():
     path = write_temp_plist(SAMPLE_PLIST)
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert list(result.keys()).count("tom waits") == 1
 
 def test_parse_library_excludes_unloved():
     path = write_temp_plist(SAMPLE_PLIST)
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert "coldplay" not in result
 
 def test_parse_library_handles_missing_artist():
     path = write_temp_plist(SAMPLE_PLIST)
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert isinstance(result, dict)
     assert "tom waits" in result
     assert "radiohead" in result
@@ -58,12 +58,12 @@ def test_parse_library_mixed_case_deduplication():
         "2": {"Artist": "tom waits", "Loved": True},
     }}
     path = write_temp_plist(data)
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert list(result.keys()).count("tom waits") == 1
 
 def test_parse_library_empty_tracks():
     path = write_temp_plist({"Tracks": {}})
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert result == {}
 
 def test_parse_library_counts_loved_tracks():
@@ -74,7 +74,7 @@ def test_parse_library_counts_loved_tracks():
         "3": {"Artist": "Tom Waits", "Loved": True},
     }}
     path = write_temp_plist(data)
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert result["tom waits"] == 3
 
 def test_parse_library_counts_mixed_loved_favorited():
@@ -84,7 +84,7 @@ def test_parse_library_counts_mixed_loved_favorited():
         "2": {"Artist": "Radiohead", "Favorited": True},
     }}
     path = write_temp_plist(data)
-    result = md.parse_library(path)
+    result, _ = md.parse_library(path)
     assert result["radiohead"] == 2
 
 from unittest.mock import patch, MagicMock
@@ -1056,8 +1056,7 @@ SAMPLE_PLIST_WITH_PLAYLIST = {
 }
 
 def test_parse_md_playlist_finds_tracks():
-    path = write_temp_plist(SAMPLE_PLIST_WITH_PLAYLIST)
-    result = md.parse_md_playlist(path)
+    result = md.parse_md_playlist(SAMPLE_PLIST_WITH_PLAYLIST)
     assert result is not None
     artists, total, unplayed = result
     assert total == 3
@@ -1065,28 +1064,22 @@ def test_parse_md_playlist_finds_tracks():
     assert "artist c" in artists
 
 def test_parse_md_playlist_counts_unplayed():
-    path = write_temp_plist(SAMPLE_PLIST_WITH_PLAYLIST)
-    result = md.parse_md_playlist(path)
+    result = md.parse_md_playlist(SAMPLE_PLIST_WITH_PLAYLIST)
     artists, total, unplayed = result
     assert unplayed == 2
 
 def test_parse_md_playlist_returns_none_when_missing():
-    data = {"Tracks": {}, "Playlists": [{"Name": "Other"}]}
-    path = write_temp_plist(data)
-    result = md.parse_md_playlist(path)
+    result = md.parse_md_playlist({"Tracks": {}, "Playlists": [{"Name": "Other"}]})
     assert result is None
 
 def test_parse_md_playlist_returns_none_when_empty():
-    data = {"Tracks": {}, "Playlists": [
+    result = md.parse_md_playlist({"Tracks": {}, "Playlists": [
         {"Name": "Music Discovery", "Playlist Items": []}
-    ]}
-    path = write_temp_plist(data)
-    result = md.parse_md_playlist(path)
+    ]})
     assert result is None
 
 def test_parse_md_playlist_artist_names_lowercased():
-    path = write_temp_plist(SAMPLE_PLIST_WITH_PLAYLIST)
-    result = md.parse_md_playlist(path)
+    result = md.parse_md_playlist(SAMPLE_PLIST_WITH_PLAYLIST)
     artists, _, _ = result
     for name in artists:
         assert name == name.lower()
