@@ -27,9 +27,9 @@ import requests
 from bs4 import BeautifulSoup
 
 # ── Path Resolution ────────────────────────────────────────
-def _resolve_library_path(cli_override=None):
+def _resolve_library_path(cli_override=None, cache_dir=None):
     """Resolve the Music Library XML path.
-    Priority: CLI flag > platform auto-detect.
+    Priority: CLI flag > auto-export (macOS) > platform auto-detect.
     Returns a pathlib.Path if found, or None if not found (with helpful log message)."""
     if cli_override:
         p = pathlib.Path(cli_override).expanduser().resolve()
@@ -39,6 +39,16 @@ def _resolve_library_path(cli_override=None):
         return None
 
     system = platform.system()
+
+    # macOS: try auto-export first
+    if system == "Darwin" and cache_dir is not None:
+        log.info("Auto-exporting Music Library...")
+        exported = auto_export_library(cache_dir)
+        if exported:
+            log.info(f"Fresh library exported to: {exported}")
+            return exported
+        log.warning("Auto-export failed — falling back to existing XML.")
+
     if system == "Darwin":
         default = pathlib.Path.home() / "Music/Music/Music Library.xml"
         export_hint = 'Open Music.app → File → Library → Export Library…'
@@ -1106,7 +1116,7 @@ def main():
     paths = _build_paths()
 
     # ── 1. Parse library ───────────────────────────────────
-    library_path = _resolve_library_path(args.library)
+    library_path = _resolve_library_path(args.library, cache_dir=paths["cache"].parent)
     if library_path is None:
         return
 

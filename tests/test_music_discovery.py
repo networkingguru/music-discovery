@@ -1068,6 +1068,37 @@ def test_auto_export_library_returns_none_when_no_file(tmp_path):
     assert result is None
 
 
+def test_resolve_library_path_auto_exports_on_macos(tmp_path):
+    """On macOS with no CLI override, should attempt auto-export first."""
+    export_path = tmp_path / "Library.xml"
+    export_path.write_bytes(plistlib.dumps({"Tracks": {}}))
+    with patch('platform.system', return_value='Darwin'), \
+         patch.object(md, 'auto_export_library', return_value=export_path) as mock_export:
+        result = md._resolve_library_path(cli_override=None, cache_dir=tmp_path)
+    assert result == export_path
+    mock_export.assert_called_once_with(tmp_path)
+
+def test_resolve_library_path_falls_back_on_export_failure(tmp_path):
+    """If auto-export fails, fall back to default XML path detection."""
+    default_xml = tmp_path / "Music" / "Music" / "Music Library.xml"
+    default_xml.parent.mkdir(parents=True)
+    default_xml.write_bytes(plistlib.dumps({"Tracks": {}}))
+    with patch('platform.system', return_value='Darwin'), \
+         patch.object(md, 'auto_export_library', return_value=None), \
+         patch('pathlib.Path.home', return_value=tmp_path):
+        result = md._resolve_library_path(cli_override=None, cache_dir=tmp_path)
+    assert result == default_xml
+
+def test_resolve_library_path_skips_export_with_cli_override(tmp_path):
+    """CLI --library flag should skip auto-export entirely."""
+    lib_path = tmp_path / "my_lib.xml"
+    lib_path.write_bytes(plistlib.dumps({"Tracks": {}}))
+    with patch.object(md, 'auto_export_library') as mock_export:
+        result = md._resolve_library_path(cli_override=str(lib_path), cache_dir=tmp_path)
+    assert result == lib_path
+    mock_export.assert_not_called()
+
+
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     """xml_only=True returns tracks without calling setup_playlist."""
     paths = {
