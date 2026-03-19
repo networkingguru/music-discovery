@@ -1222,6 +1222,44 @@ def test_audit_skips_in_non_interactive_mode_when_over_25():
     assert result == set()
 
 
+def test_main_runs_playlist_audit(tmp_path, monkeypatch):
+    """Verify main() calls audit and adds rejected artists to blocklist."""
+    plist_data = {
+        "Tracks": {
+            "1": {"Artist": "Loved One", "Loved": True, "Favorited": True},
+            "2": {"Artist": "Rejected", "Name": "Song", "Play Count": 3},
+        },
+        "Playlists": [
+            {"Name": "Music Discovery", "Playlist Items": [{"Track ID": 2}]},
+        ],
+    }
+    lib_path = tmp_path / "Library.xml"
+    lib_path.write_bytes(plistlib.dumps(plist_data))
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    monkeypatch.setattr('sys.argv', ['music_discovery.py', '--library', str(lib_path)])
+    monkeypatch.setenv('CACHE_DIR', str(cache_dir))
+    monkeypatch.setenv('OUTPUT_DIR', str(cache_dir))
+    monkeypatch.setenv('LASTFM_API_KEY', 'dummy_key_for_test_00000000000')
+    # Skip interactive API key prompt
+    monkeypatch.setattr(md, 'prompt_for_api_key', lambda *a, **kw: None)
+    # Provide a scraper that returns no similar artists (fast)
+    monkeypatch.setattr(md, 'detect_scraper', lambda: lambda artist: {})
+    # Skip network calls for filter data
+    monkeypatch.setattr(md, 'fetch_filter_data', lambda *a, **kw: {})
+
+    md.main()
+
+    # Check that 'rejected' was added to blocklist_cache.json
+    import json
+    blocklist_path = cache_dir / "blocklist_cache.json"
+    assert blocklist_path.exists(), "blocklist_cache.json should have been created"
+    data = json.loads(blocklist_path.read_text())
+    assert "rejected" in data.get("blocked", [])
+
+
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     """xml_only=True returns tracks without calling setup_playlist."""
     paths = {

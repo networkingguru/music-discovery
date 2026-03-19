@@ -1225,10 +1225,24 @@ def main():
     # ── 2. Load caches ─────────────────────────────────────
     cache        = load_cache(paths["cache"])
     filter_cache = load_cache(paths["filter_cache"]) if api_key else {}
-    file_blocklist = load_blocklist(paths["blocklist"]) if api_key else set()
+    file_blocklist = load_blocklist(paths["blocklist"])
     user_blocklist_path = pathlib.Path(__file__).parent / "blocklist.txt"
     user_blocklist = load_user_blocklist(user_blocklist_path)
     file_blocklist |= user_blocklist
+
+    # ── 2b. Audit previous Music Discovery playlist ────────
+    md_audit = parse_md_playlist(library_path)
+    if md_audit is not None:
+        md_artists, md_total, md_unplayed = md_audit
+        interactive = sys.stdin.isatty()
+        newly_rejected = audit_md_playlist(
+            md_artists, library_artists, file_blocklist,
+            total=md_total, unplayed=md_unplayed, interactive=interactive,
+        )
+        if newly_rejected:
+            file_blocklist |= newly_rejected
+            save_blocklist(file_blocklist, paths["blocklist"])
+            log.info(f"Saved {len(newly_rejected)} rejected artist(s) to blocklist.")
 
     already_done = len(cache)
     if already_done:
