@@ -1099,6 +1099,62 @@ def test_resolve_library_path_skips_export_with_cli_override(tmp_path):
     mock_export.assert_not_called()
 
 
+SAMPLE_PLIST_WITH_PLAYLIST = {
+    "Tracks": {
+        "100": {"Artist": "Artist A", "Name": "Song 1", "Loved": True, "Play Count": 5},
+        "101": {"Artist": "Artist B", "Name": "Song 2", "Play Count": 0},
+        "102": {"Artist": "Artist B", "Name": "Song 3"},
+        "103": {"Artist": "Artist C", "Name": "Song 4", "Play Count": 2},
+        "104": {"Artist": "Artist D", "Name": "Song 5", "Loved": True, "Play Count": 1},
+    },
+    "Playlists": [
+        {"Name": "Library", "Playlist Items": [
+            {"Track ID": 100}, {"Track ID": 101}, {"Track ID": 102},
+            {"Track ID": 103}, {"Track ID": 104},
+        ]},
+        {"Name": "Music Discovery", "Playlist Items": [
+            {"Track ID": 101}, {"Track ID": 102}, {"Track ID": 103},
+        ]},
+    ],
+}
+
+def test_parse_md_playlist_finds_tracks():
+    path = write_temp_plist(SAMPLE_PLIST_WITH_PLAYLIST)
+    result = md.parse_md_playlist(path)
+    assert result is not None
+    artists, total, unplayed = result
+    assert total == 3
+    assert "artist b" in artists
+    assert "artist c" in artists
+
+def test_parse_md_playlist_counts_unplayed():
+    path = write_temp_plist(SAMPLE_PLIST_WITH_PLAYLIST)
+    result = md.parse_md_playlist(path)
+    artists, total, unplayed = result
+    assert unplayed == 2
+
+def test_parse_md_playlist_returns_none_when_missing():
+    data = {"Tracks": {}, "Playlists": [{"Name": "Other"}]}
+    path = write_temp_plist(data)
+    result = md.parse_md_playlist(path)
+    assert result is None
+
+def test_parse_md_playlist_returns_none_when_empty():
+    data = {"Tracks": {}, "Playlists": [
+        {"Name": "Music Discovery", "Playlist Items": []}
+    ]}
+    path = write_temp_plist(data)
+    result = md.parse_md_playlist(path)
+    assert result is None
+
+def test_parse_md_playlist_artist_names_lowercased():
+    path = write_temp_plist(SAMPLE_PLIST_WITH_PLAYLIST)
+    result = md.parse_md_playlist(path)
+    artists, _, _ = result
+    for name in artists:
+        assert name == name.lower()
+
+
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     """xml_only=True returns tracks without calling setup_playlist."""
     paths = {

@@ -403,6 +403,52 @@ def parse_library(xml_path):
                 counts[artist] = counts.get(artist, 0) + 1
     return counts
 
+def parse_md_playlist(xml_path):
+    """Find the 'Music Discovery' playlist in the XML and return audit data.
+    Returns (artist_set, total_tracks, unplayed_count) or None if no MD playlist.
+    artist_set contains lowercased artist names from the playlist.
+    A track is 'unplayed' if Play Count is 0 or absent."""
+    try:
+        with open(xml_path, "rb") as f:
+            library = plistlib.load(f)
+    except Exception:
+        return None
+
+    tracks_dict = library.get("Tracks", {})
+    playlists = library.get("Playlists", [])
+
+    md_playlist = None
+    for pl in playlists:
+        if pl.get("Name") == "Music Discovery":
+            md_playlist = pl
+            break
+    if md_playlist is None:
+        return None
+
+    items = md_playlist.get("Playlist Items", [])
+    if not items:
+        return None
+
+    artists = set()
+    unplayed = 0
+    total = 0
+    for item in items:
+        track_id = str(item.get("Track ID", ""))
+        track = tracks_dict.get(track_id)
+        if track is None:
+            continue
+        total += 1
+        artist = track.get("Artist", "").strip().lower()
+        if artist:
+            artists.add(artist)
+        if track.get("Play Count", 0) == 0:
+            unplayed += 1
+
+    if total == 0:
+        return None
+
+    return artists, total, unplayed
+
 def scrape_musicmap_requests(artist):
     """Fetch similar artists from music-map.com using requests.
     Returns {artist_name: proximity_score} dict (0.0–1.0), or {} on failure.
