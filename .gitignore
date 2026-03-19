@@ -8,3 +8,4 @@ music_discovery_results.txt
 blocklist.txt
 compare_scoring.py
 scoring_comparison.txt
+.worktrees/
