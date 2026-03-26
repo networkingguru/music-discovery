@@ -9,3 +9,7 @@ blocklist.txt
 compare_scoring.py
 scoring_comparison.txt
 .worktrees/
+
+# Apple Music API POC
+*.p8
+similarity_comparison.json

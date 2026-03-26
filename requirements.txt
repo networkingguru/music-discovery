@@ -2,3 +2,5 @@ requests
 beautifulsoup4
 playwright
 python-dotenv
+pyjwt[crypto]
+cryptography
