@@ -252,6 +252,103 @@ def test_score_artists_skips_stale_entries():
     expected = math.log(1 + 1) ** 0.5 * 0.9
     assert abs(scores["x"] - expected) < 1e-9
 
+def test_score_artists_negative_scoring():
+    """Blocklisted artist neighbors receive a score penalty."""
+    cache = {
+        "loved1": {"cand_a": 0.8, "cand_b": 0.6},
+    }
+    library = {"loved1": 5}
+    blocklist_cache = {
+        "hated1": {"cand_a": 0.9, "cand_c": 0.7},
+    }
+    user_blocklist = {"hated1"}
+
+    baseline = md.score_artists(cache, library)
+    baseline_scores = {name: s for s, name in baseline}
+
+    result = md.score_artists(cache, library, blocklist_cache, user_blocklist)
+    result_scores = {name: s for s, name in result}
+
+    assert result_scores["cand_a"] < baseline_scores["cand_a"]
+    assert result_scores["cand_b"] == pytest.approx(baseline_scores["cand_b"], abs=1e-9)
+    assert result_scores["cand_c"] < 0
+
+def test_score_artists_negative_formula():
+    """Verify exact negative scoring formula."""
+    cache = {
+        "loved1": {"cand_x": 0.5},
+    }
+    library = {"loved1": 3}
+    blocklist_cache = {
+        "hated1": {"cand_x": 0.7},
+    }
+    user_blocklist = {"hated1"}
+
+    result = md.score_artists(cache, library, blocklist_cache, user_blocklist)
+    result_scores = {name: s for s, name in result}
+
+    positive = math.log(3 + 1) ** 0.5 * 0.5
+    negative = md.NEGATIVE_PENALTY * 0.7
+    expected = positive - negative
+
+    assert result_scores["cand_x"] == pytest.approx(expected, abs=1e-9)
+
+def test_score_artists_excludes_blocklisted_artists():
+    """Blocklisted artists themselves never appear in scored output."""
+    cache = {
+        "loved1": {"hated1": 0.9, "cand_a": 0.5},
+    }
+    library = {"loved1": 2}
+    blocklist_cache = {
+        "hated1": {"cand_a": 0.3},
+    }
+    user_blocklist = {"hated1"}
+
+    result = md.score_artists(cache, library, blocklist_cache, user_blocklist)
+    names = [name for _, name in result]
+
+    assert "hated1" not in names
+    assert "cand_a" in names
+
+def test_score_artists_backward_compatible():
+    """Calling without blocklist args produces identical results to old behavior."""
+    cache = {
+        "loved1": {"cand_a": 0.8, "cand_b": 0.4},
+        "loved2": {"cand_a": 0.6},
+    }
+    library = {"loved1": 5, "loved2": 3}
+
+    result_old_style = md.score_artists(cache, library)
+    result_new_style = md.score_artists(cache, library, blocklist_cache=None, user_blocklist=None)
+
+    assert result_old_style == result_new_style
+
+def test_score_artists_negative_skips_stale():
+    """Stale flat-list entries in blocklist_cache are silently skipped."""
+    cache = {
+        "loved1": {"cand_a": 0.8},
+    }
+    library = {"loved1": 2}
+    blocklist_cache = {
+        "hated1": ["cand_a", "cand_b"],      # stale list format — skip
+        "hated2": {"cand_a": 0.6},            # fresh dict — apply penalty
+    }
+    user_blocklist = {"hated1", "hated2"}
+
+    result = md.score_artists(cache, library, blocklist_cache, user_blocklist)
+    result_scores = {name: s for s, name in result}
+
+    positive = math.log(2 + 1) ** 0.5 * 0.8
+    negative = md.NEGATIVE_PENALTY * 0.6
+    expected = positive - negative
+
+    assert result_scores["cand_a"] == pytest.approx(expected, abs=1e-9)
+
+def test_negative_penalty_milder_than_positive():
+    """Verify that NEGATIVE_PENALTY < smallest possible positive weight."""
+    min_positive_weight = math.log(1 + 1) ** 0.5
+    assert md.NEGATIVE_PENALTY < min_positive_weight
+
 def test_fetch_filter_data_returns_listeners_and_debut():
     """Returns dict with listeners (int) and debut_year (int)."""
     search_resp = MagicMock()
