@@ -1552,6 +1552,72 @@ def test_parse_library_jxa_timeout():
             md.parse_library_jxa()
 
 
+# ── JXA playlist reading tests ────────────────────────────────
+
+def test_parse_md_playlist_jxa_basic():
+    jxa_output = json.dumps({
+        "tracks": [
+            {"artist": "Nick Cave", "playCount": 5},
+            {"artist": "Leonard Cohen", "playCount": 0},
+            {"artist": "PJ Harvey", "playCount": 3},
+            {"artist": "Nick Cave", "playCount": 2},
+        ]
+    })
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_md_playlist_jxa()
+    artists, total, unplayed = result
+    assert artists == {"nick cave", "leonard cohen", "pj harvey"}
+    assert total == 4
+    assert unplayed == 1
+
+def test_parse_md_playlist_jxa_all_unplayed():
+    jxa_output = json.dumps({
+        "tracks": [
+            {"artist": "A", "playCount": 0},
+            {"artist": "B", "playCount": 0},
+        ]
+    })
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        artists, total, unplayed = md.parse_md_playlist_jxa()
+    assert total == 2
+    assert unplayed == 2
+
+def test_parse_md_playlist_jxa_no_playlist():
+    jxa_output = "null"
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_md_playlist_jxa()
+    assert result is None
+
+def test_parse_md_playlist_jxa_empty_playlist():
+    jxa_output = json.dumps({"tracks": []})
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_md_playlist_jxa()
+    assert result is None
+
+def test_parse_md_playlist_jxa_nonzero_exit():
+    with patch.object(md, "_run_jxa", return_value=("error text", 1)):
+        with pytest.raises(RuntimeError, match="JXA playlist read failed"):
+            md.parse_md_playlist_jxa()
+
+def test_parse_md_playlist_jxa_invalid_json():
+    with patch.object(md, "_run_jxa", return_value=("broken{json", 0)):
+        with pytest.raises(RuntimeError, match="Failed to parse JXA playlist output"):
+            md.parse_md_playlist_jxa()
+
+def test_parse_md_playlist_jxa_skips_empty_artists():
+    jxa_output = json.dumps({
+        "tracks": [
+            {"artist": "Nick Cave", "playCount": 1},
+            {"artist": "", "playCount": 0},
+        ]
+    })
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        artists, total, unplayed = md.parse_md_playlist_jxa()
+    assert artists == {"nick cave"}
+    assert total == 2
+    assert unplayed == 1
+
+
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     """xml_only=True returns tracks without calling setup_playlist."""
     paths = {

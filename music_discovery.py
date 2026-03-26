@@ -398,6 +398,53 @@ JSON.stringify(artists);
             counts[artist] = counts.get(artist, 0) + 1
     return counts
 
+def parse_md_playlist_jxa():
+    """Read the Music Discovery playlist from Music.app via JXA.
+    Returns (artist_set, total_tracks, unplayed_count) or None if no playlist.
+    Raises RuntimeError on JXA failure."""
+    script = '''
+var music = Application("Music");
+var playlists = music.userPlaylists.whose({name: "Music Discovery"});
+if (playlists.length === 0) {
+    JSON.stringify(null);
+} else {
+    var pl = playlists[0];
+    var tracks = pl.tracks;
+    var count = tracks.length;
+    var result = [];
+    if (count > 0) {
+        var artists = tracks.artist();
+        var playCounts = tracks.playedCount();
+        for (var i = 0; i < count; i++) {
+            result.push({artist: artists[i] || "", playCount: playCounts[i] || 0});
+        }
+    }
+    JSON.stringify({tracks: result});
+}
+'''
+    stdout, code = _run_jxa(script)
+    if code != 0:
+        raise RuntimeError(f"JXA playlist read failed (exit {code}): {stdout}")
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise RuntimeError(f"Failed to parse JXA playlist output: {e}")
+    if data is None:
+        return None
+    track_list = data.get("tracks", [])
+    if not track_list:
+        return None
+    artists = set()
+    unplayed = 0
+    total = len(track_list)
+    for t in track_list:
+        artist = t.get("artist", "").strip().lower()
+        if artist:
+            artists.add(artist)
+        if t.get("playCount", 0) == 0:
+            unplayed += 1
+    return artists, total, unplayed
+
 def parse_md_playlist(library):
     """Find the 'Music Discovery' playlist in a parsed library dict.
     Returns (artist_set, total_tracks, unplayed_count) or None if no MD playlist.
