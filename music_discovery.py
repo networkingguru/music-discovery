@@ -1373,23 +1373,35 @@ def main():
     paths = _build_paths()
 
     # ── 1. Parse library ───────────────────────────────────
-    library_path = _resolve_library_path(args.library)
-    if library_path is None:
-        return
+    use_jxa = platform.system() == "Darwin" and args.library is None
+    library_artists = None
+    raw_library = None
 
-    log.info(f"Reading library: {library_path}")
+    if use_jxa:
+        try:
+            log.info("Reading library from Music.app via JXA...")
+            library_artists = parse_library_jxa()
+            log.info(f"Found {len(library_artists)} unique loved/favorited artists.\n")
+        except RuntimeError as e:
+            log.warning(f"JXA library read failed: {e}")
+            log.warning("Falling back to XML library parsing...")
+            use_jxa = False
+
+    if library_artists is None:
+        library_path = _resolve_library_path(args.library)
+        if library_path is None:
+            return
+        log.info(f"Reading library: {library_path}")
+        library_artists, raw_library = parse_library(library_path)
+        log.info(f"Found {len(library_artists)} unique loved/favorited artists.\n")
 
     api_key = os.environ.get("LASTFM_API_KEY", "").strip()
     if not api_key:
         api_key = prompt_for_api_key()
-        # api_key is None if user skipped or exhausted attempts
 
     if not api_key:
         log.info("\nRunning without Last.fm — results will include well-known artists")
         log.info("that would normally be filtered out.\n")
-
-    library_artists, raw_library = parse_library(library_path)
-    log.info(f"Found {len(library_artists)} unique loved/favorited artists.\n")
 
     # ── 2. Load caches ─────────────────────────────────────
     cache        = load_cache(paths["cache"])
@@ -1400,9 +1412,15 @@ def main():
     file_blocklist |= user_blocklist
 
     # ── 2b. Audit previous Music Discovery playlist ────────
-    # The XML file can be stale — verify playlist exists in Music.app first
     md_audit = None
-    if platform.system() == "Darwin":
+    if use_jxa:
+        try:
+            md_audit = parse_md_playlist_jxa()
+            if md_audit is None:
+                log.info("No existing Music Discovery playlist found.")
+        except RuntimeError as e:
+            log.warning(f"JXA playlist read failed: {e}")
+    elif platform.system() == "Darwin" and raw_library is not None:
         out, code = _run_applescript('''
 tell application "Music"
     if (exists user playlist "Music Discovery") then
@@ -1416,7 +1434,7 @@ end tell
             md_audit = parse_md_playlist(raw_library)
         elif code == 0 and out == "no":
             log.info("No existing Music Discovery playlist found.")
-    else:
+    elif raw_library is not None:
         md_audit = parse_md_playlist(raw_library)
     md_exclusion = set()  # exclude from THIS run only (not saved to blocklist)
     if md_audit is not None:
