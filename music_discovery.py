@@ -372,6 +372,32 @@ def parse_library(xml_path):
                 counts[artist] = counts.get(artist, 0) + 1
     return counts, library
 
+def parse_library_jxa():
+    """Read favorited tracks from Music.app via JXA, return {artist: count} dict.
+    Artists are lowercase. Raises RuntimeError on failure."""
+    script = '''
+var music = Application("Music");
+var lib = music.libraryPlaylists[0];
+var favTracks = lib.tracks.whose({favorited: true});
+var artists = favTracks.artist();
+JSON.stringify(artists);
+'''
+    stdout, code = _run_jxa(script)
+    if code != 0:
+        raise RuntimeError(f"JXA library read failed (exit {code}): {stdout}")
+    try:
+        artist_list = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise RuntimeError(f"Failed to parse JXA output: {e}")
+    counts = {}
+    for artist in artist_list:
+        if not isinstance(artist, str):
+            continue
+        artist = artist.strip().lower()
+        if artist:
+            counts[artist] = counts.get(artist, 0) + 1
+    return counts
+
 def parse_md_playlist(library):
     """Find the 'Music Discovery' playlist in a parsed library dict.
     Returns (artist_set, total_tracks, unplayed_count) or None if no MD playlist.

@@ -1504,6 +1504,54 @@ def test_add_track_library_path(monkeypatch):
     assert result is True
 
 
+# ── JXA library reading tests ────────────────────────────────
+
+def test_parse_library_jxa_basic():
+    jxa_output = json.dumps(["Tom Waits", "Radiohead", "Tom Waits", "Tom Waits"])
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_library_jxa()
+    assert result == {"tom waits": 3, "radiohead": 1}
+
+def test_parse_library_jxa_empty_library():
+    jxa_output = json.dumps([])
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_library_jxa()
+    assert result == {}
+
+def test_parse_library_jxa_case_folding():
+    jxa_output = json.dumps(["Radiohead", "RADIOHEAD", "radiohead"])
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_library_jxa()
+    assert result == {"radiohead": 3}
+
+def test_parse_library_jxa_strips_whitespace():
+    jxa_output = json.dumps(["  Tom Waits  ", "Tom Waits"])
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_library_jxa()
+    assert result == {"tom waits": 2}
+
+def test_parse_library_jxa_skips_empty_artists():
+    jxa_output = json.dumps(["Tom Waits", "", "  ", "Radiohead"])
+    with patch.object(md, "_run_jxa", return_value=(jxa_output, 0)):
+        result = md.parse_library_jxa()
+    assert result == {"tom waits": 1, "radiohead": 1}
+
+def test_parse_library_jxa_nonzero_exit():
+    with patch.object(md, "_run_jxa", return_value=("", 1)):
+        with pytest.raises(RuntimeError, match="JXA library read failed"):
+            md.parse_library_jxa()
+
+def test_parse_library_jxa_invalid_json():
+    with patch.object(md, "_run_jxa", return_value=("not json at all", 0)):
+        with pytest.raises(RuntimeError, match="Failed to parse JXA output"):
+            md.parse_library_jxa()
+
+def test_parse_library_jxa_timeout():
+    with patch.object(md, "_run_jxa", side_effect=RuntimeError("osascript (JXA) timed out after 30 seconds")):
+        with pytest.raises(RuntimeError, match="timed out"):
+            md.parse_library_jxa()
+
+
 def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     """xml_only=True returns tracks without calling setup_playlist."""
     paths = {
