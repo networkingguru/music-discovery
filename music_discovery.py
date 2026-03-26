@@ -821,11 +821,10 @@ def search_itunes(artist, track_name):
 
 
 def setup_playlist():
-    """Create or clear the 'Music Discovery' playlist.
-    If the existing playlist has more than MAX_PLAYLIST_TRACKS, deletes the
-    whole playlist and creates a fresh one (avoids beachballing Music.app
-    on large track-delete operations).
-    Verifies the playlist is empty before returning.
+    """Create or reset the 'Music Discovery' playlist.
+    If the playlist exists and contains tracks, deletes the whole playlist
+    and creates a fresh one.  This avoids an iCloud Music Library sync race
+    where 'delete tracks' can leave stale track references behind.
     Returns True on success, False on failure."""
 
     # Step 1: Check if playlist exists and how big it is
@@ -849,7 +848,7 @@ end tell
         log.error(f"Unexpected response checking playlist: {out}")
         return False
 
-    # Step 2: Handle based on size
+    # Step 2: Handle based on state
     if track_count == -1:
         # Playlist doesn't exist — create it
         _, code = _run_applescript('''
@@ -859,8 +858,8 @@ end tell
 ''')
         return code == 0
 
-    if track_count > MAX_PLAYLIST_TRACKS:
-        # Too large to clear safely — delete the whole playlist and recreate
+    if track_count > 0:
+        # Playlist has tracks — delete and recreate to avoid iCloud sync issues
         log.info(f"Existing playlist has {track_count} tracks — deleting and recreating.")
         _, code = _run_applescript('''
 tell application "Music"
@@ -868,7 +867,7 @@ tell application "Music"
 end tell
 ''')
         if code != 0:
-            log.error("Could not delete oversized playlist.")
+            log.error("Could not delete existing playlist.")
             return False
         time.sleep(1)
         _, code = _run_applescript('''
@@ -878,30 +877,7 @@ end tell
 ''')
         return code == 0
 
-    if track_count > 0:
-        # Small enough to clear normally
-        _, code = _run_applescript('''
-tell application "Music"
-    delete tracks of user playlist "Music Discovery"
-end tell
-''')
-        if code != 0:
-            log.error("Could not clear playlist tracks.")
-            return False
-
-    # Step 3: Verify the playlist is empty
-    out, code = _run_applescript(count_script)
-    if code != 0:
-        log.error("Could not verify playlist state after clearing.")
-        return False
-    try:
-        final_count = int(out)
-    except ValueError:
-        log.error(f"Unexpected response verifying playlist: {out}")
-        return False
-    if final_count > 0:
-        log.error(f"Playlist still has {final_count} tracks after clearing — aborting.")
-        return False
+    # track_count == 0 — playlist exists and is already empty
     return True
 
 

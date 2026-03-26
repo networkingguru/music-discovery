@@ -681,8 +681,8 @@ def test_search_itunes_returns_none_on_error(monkeypatch):
 
 # ── setup_playlist ────────────────────────────────────────
 
-def test_setup_playlist_returns_true_on_success(monkeypatch):
-    """Returns True when osascript succeeds."""
+def test_setup_playlist_creates_if_missing(monkeypatch):
+    """Returns True and creates playlist when it doesn't exist."""
     responses = iter([("-1", 0), ("", 0)])
     monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
     assert md.setup_playlist() is True
@@ -690,6 +690,43 @@ def test_setup_playlist_returns_true_on_success(monkeypatch):
 def test_setup_playlist_returns_false_on_failure(monkeypatch):
     """Returns False when osascript fails."""
     monkeypatch.setattr(md, "_run_applescript", lambda script: ("error", 1))
+    assert md.setup_playlist() is False
+
+def test_setup_playlist_deletes_and_recreates_nonempty(monkeypatch):
+    """Non-empty playlist is deleted and recreated (not just cleared)."""
+    scripts_called = []
+    responses = iter([
+        ("25", 0),   # count query — 25 tracks exist
+        ("", 0),     # delete playlist
+        ("", 0),     # create new playlist
+    ])
+    def fake_run(script):
+        scripts_called.append(script)
+        return next(responses)
+    monkeypatch.setattr(md, "_run_applescript", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert md.setup_playlist() is True
+    assert "delete user playlist" in scripts_called[1]
+    assert "delete tracks" not in scripts_called[1]
+
+def test_setup_playlist_empty_playlist_is_noop(monkeypatch):
+    """Already-empty playlist returns True without any delete or create."""
+    call_count = [0]
+    def fake_run(script):
+        call_count[0] += 1
+        return ("0", 0)
+    monkeypatch.setattr(md, "_run_applescript", fake_run)
+    assert md.setup_playlist() is True
+    assert call_count[0] == 1
+
+def test_setup_playlist_delete_failure_returns_false(monkeypatch):
+    """Returns False when deleting existing playlist fails."""
+    responses = iter([
+        ("10", 0),    # count query — 10 tracks exist
+        ("error", 1), # delete fails
+    ])
+    monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
+    monkeypatch.setattr("time.sleep", lambda s: None)
     assert md.setup_playlist() is False
 
 def test_setup_playlist_script_references_playlist_name(monkeypatch):
