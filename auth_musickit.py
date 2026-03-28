@@ -11,6 +11,7 @@ import json
 import logging
 import pathlib
 import threading
+import time
 import webbrowser
 
 log = logging.getLogger("auth_musickit")
@@ -55,9 +56,12 @@ class TokenServer:
             def do_POST(self):
                 if self.path == "/callback":
                     length = int(self.headers.get("Content-Length", 0))
-                    body = json.loads(self.rfile.read(length))
-                    server_ref.user_token = body.get("token")
-                    self.send_response(200)
+                    try:
+                        body = json.loads(self.rfile.read(length))
+                        server_ref.user_token = body.get("token")
+                        self.send_response(200)
+                    except (json.JSONDecodeError, ValueError):
+                        self.send_response(400)
                     self.end_headers()
                     self.wfile.write(b"ok")
                 else:
@@ -72,10 +76,9 @@ class TokenServer:
     def serve_until_token(self, timeout=300):
         """Serve until token is received or timeout (seconds)."""
         self._server.timeout = 1
-        elapsed = 0
-        while self.user_token is None and elapsed < timeout:
+        deadline = time.monotonic() + timeout
+        while self.user_token is None and time.monotonic() < deadline:
             self._server.handle_request()
-            elapsed += 1
         self._server.server_close()
 
 

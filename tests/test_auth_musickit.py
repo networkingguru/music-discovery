@@ -3,8 +3,6 @@ import json
 import threading
 import time
 import urllib.request
-import pytest
-from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 
