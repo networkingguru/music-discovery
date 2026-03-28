@@ -6,11 +6,52 @@ and negative scoring penalty dimensions.
 Generates a 4x4 matrix of ranked candidate lists and a movement report.
 """
 
+import json
+import logging
 import math
 import sys
 import pathlib
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+
+log = logging.getLogger("tuning")
+
+
+def prefetch_apple_data(client, library_artists, cache_path):
+    """Fetch similar artists from Apple Music API for all library artists.
+
+    Loads existing cache, fetches missing artists, saves updated cache.
+    Returns {artist: [similar_artist_lowercase, ...]} dict.
+    """
+    # Load existing cache
+    if cache_path.exists():
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+    else:
+        cache = {}
+
+    to_fetch = [a for a in library_artists if a not in cache]
+    if to_fetch:
+        log.info(f"Fetching Apple Music data for {len(to_fetch)} artists "
+                 f"({len(cache)} already cached)...")
+
+    for i, artist in enumerate(to_fetch, 1):
+        artist_id, matched_name = client.search_artist(artist)
+        if artist_id is None:
+            log.warning(f"  [{i}/{len(to_fetch)}] {artist} — not found on Apple Music")
+            continue
+        similar = client.get_similar_artists(artist_id)
+        cache[artist] = [s["name"].lower() for s in similar]
+        log.info(f"  [{i}/{len(to_fetch)}] {artist} → {len(similar)} similar artists")
+        if i < len(to_fetch):
+            time.sleep(1)  # rate limit
+
+    # Save updated cache
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
+
+    return cache
 
 
 def score_artists_tunable(cache, library_artists, *, apple_cache,

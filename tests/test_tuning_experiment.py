@@ -2,10 +2,14 @@
 import pytest
 import sys
 import pathlib
+from unittest.mock import MagicMock, patch
+import json
+import tempfile
+import os
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from tuning_experiment import score_artists_tunable
+from tuning_experiment import score_artists_tunable, prefetch_apple_data
 
 
 class TestScoreArtistsTunable:
@@ -104,3 +108,57 @@ class TestScoreArtistsTunable:
         )
         names = [name for _, name in result]
         assert "blocked_one" not in names
+
+
+class TestPrefetchAppleData:
+    """Test Apple Music data prefetching and caching."""
+
+    def test_prefetch_caches_similar_artists(self, tmp_path):
+        """Prefetch stores similar artists as lowercase name lists."""
+        cache_path = tmp_path / "apple_music_cache.json"
+        client = MagicMock()
+        client.search_artist.return_value = ("123", "Radiohead")
+        client.get_similar_artists.return_value = [
+            {"name": "Thom Yorke", "id": "A1"},
+            {"name": "Muse", "id": "A2"},
+        ]
+        library = {"radiohead": 5}
+
+        result = prefetch_apple_data(client, library, cache_path)
+
+        assert "radiohead" in result
+        assert "thom yorke" in result["radiohead"]
+        assert "muse" in result["radiohead"]
+        with open(cache_path) as f:
+            saved = json.load(f)
+        assert saved == result
+
+    def test_prefetch_skips_not_found(self, tmp_path):
+        """Artists not found on Apple Music are skipped (not cached)."""
+        cache_path = tmp_path / "apple_music_cache.json"
+        client = MagicMock()
+        client.search_artist.return_value = (None, None)
+        library = {"unknown_artist": 1}
+
+        result = prefetch_apple_data(client, library, cache_path)
+
+        assert "unknown_artist" not in result
+
+    def test_prefetch_uses_existing_cache(self, tmp_path):
+        """Already-cached artists are not re-fetched."""
+        cache_path = tmp_path / "apple_music_cache.json"
+        existing = {"radiohead": ["thom yorke", "muse"]}
+        with open(cache_path, "w") as f:
+            json.dump(existing, f)
+        client = MagicMock()
+        library = {"radiohead": 5, "portishead": 2}
+        client.search_artist.return_value = ("456", "Portishead")
+        client.get_similar_artists.return_value = [
+            {"name": "Massive Attack", "id": "A3"},
+        ]
+
+        result = prefetch_apple_data(client, library, cache_path)
+
+        client.search_artist.assert_called_once_with("portishead")
+        assert result["radiohead"] == ["thom yorke", "muse"]
+        assert "massive attack" in result["portishead"]
