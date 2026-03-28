@@ -134,7 +134,18 @@ Recommendations are generated programmatically by analyzing:
 
 ## Output
 
-A single report file (`signal_wargaming_results.md`) containing all four phases with narrative analysis. The tool can also build a Music Discovery playlist for any recommended config on demand, so the user can listen and evaluate.
+### Report
+A single report file (`signal_wargaming_results.md`) containing all four phases with narrative analysis.
+
+### Evaluation Playlist
+A single Music Discovery playlist containing a small number of tracks (2-3) from each artist that appears in the top 10 of ANY recommended config. This is a union — one playlist covers all configs. The user listens once and favorites the songs they like.
+
+### Post-Listen Scoring
+After the user listens and favorites new songs, a follow-up command re-scores all configs against the user's actual preferences. For each recommended config, compute:
+- How many of the user's new favorites appeared in that config's top 10
+- Precision: what percentage of that config's top 10 did the user actually like
+
+This identifies the optimal default weight configuration empirically — the config that best predicted what the user would actually enjoy. The winning config becomes the default for the main pipeline.
 
 ## Architecture
 
