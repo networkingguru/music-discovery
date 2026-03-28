@@ -10,6 +10,7 @@ import os
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from tuning_experiment import score_artists_tunable, prefetch_apple_data, generate_report, APPLE_WEIGHTS, NEG_PENALTIES
+from tuning_experiment import main as tuning_main
 
 
 class TestScoreArtistsTunable:
@@ -212,3 +213,52 @@ class TestGenerateReport:
         assert len(baseline_entries) >= 1
         rank_6 = [l for l in lines if l.strip().startswith("6.")]
         assert len(rank_6) == 0
+
+
+class TestMainSmoke:
+    """Smoke test for main() wiring."""
+
+    @patch("tuning_experiment.prefetch_apple_data")
+    @patch("tuning_experiment.AppleMusicClient")
+    @patch("tuning_experiment.generate_apple_music_token")
+    @patch("tuning_experiment.filter_candidates")
+    @patch("tuning_experiment.load_user_blocklist")
+    @patch("tuning_experiment.load_blocklist")
+    @patch("tuning_experiment.load_cache")
+    @patch("tuning_experiment.load_dotenv")
+    @patch("tuning_experiment._build_paths")
+    @patch("tuning_experiment.parse_library_jxa")
+    def test_main_runs_without_error(self, mock_jxa, mock_paths, mock_dotenv,
+                                      mock_load_cache, mock_bl, mock_ubl,
+                                      mock_filter, mock_token, mock_client_cls,
+                                      mock_prefetch, tmp_path, monkeypatch):
+        """main() wires everything together without crashing."""
+        mock_paths.return_value = {
+            "cache": tmp_path / "music_map_cache.json",
+            "filter_cache": tmp_path / "filter_cache.json",
+            "blocklist": tmp_path / "blocklist_cache.json",
+            "blocklist_scrape": tmp_path / "blocklist_scrape_cache.json",
+            "top_tracks": tmp_path / "top_tracks_cache.json",
+            "output": tmp_path / "results.txt",
+            "playlist_xml": tmp_path / "playlist.xml",
+        }
+        mock_jxa.return_value = {"loved1": 3, "loved2": 1}
+        mock_load_cache.side_effect = [
+            {"loved1": {"cand_a": 0.9, "cand_b": 0.5}},
+            {"cand_a": {"listeners": 1000, "debut_year": 2015}},
+            {},
+        ]
+        mock_bl.return_value = set()
+        mock_ubl.return_value = set()
+        mock_filter.side_effect = lambda scored, *a, **kw: scored
+        mock_prefetch.return_value = {"loved1": ["cand_d"]}
+        mock_token.return_value = "fake-token"
+
+        monkeypatch.setattr("sys.argv", ["tuning_experiment.py"])
+        monkeypatch.setenv("APPLE_MUSIC_KEY_ID", "test")
+        monkeypatch.setenv("APPLE_MUSIC_TEAM_ID", "test")
+        monkeypatch.setenv("APPLE_MUSIC_KEY_PATH", "/tmp/fake.p8")
+        monkeypatch.setattr("tuning_experiment.OUTPUT_DIR", tmp_path)
+
+        tuning_main()  # should not raise
+        assert (tmp_path / "tuning_results.md").exists()

@@ -6,14 +6,25 @@ and negative scoring penalty dimensions.
 Generates a 4x4 matrix of ranked candidate lists and a movement report.
 """
 
+import argparse
 import json
 import logging
 import math
+import os
 import sys
 import pathlib
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+
+from music_discovery import (
+    _build_paths, load_dotenv, load_cache,
+    load_blocklist, load_user_blocklist,
+    filter_candidates, parse_library_jxa,
+)
+from compare_similarity import (
+    generate_apple_music_token, AppleMusicClient,
+)
 
 log = logging.getLogger("tuning")
 
@@ -199,3 +210,84 @@ def generate_report(variants, top_n=TOP_N, library_count=0):
 
     lines.append("")
     return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Tuning experiment: compare scoring variants"
+    )
+    parser.add_argument("--refresh-apple", action="store_true",
+                        help="Re-fetch all Apple Music data (ignore cache)")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    load_dotenv()
+    paths = _build_paths()
+
+    # 1. Parse library
+    print("Reading library via JXA...")
+    library_artists = parse_library_jxa()
+    print(f"Found {len(library_artists)} artists with loved/favorited tracks.")
+
+    # 2. Load existing caches (read-only)
+    cache = load_cache(paths["cache"])
+    filter_cache_data = load_cache(paths["filter_cache"])
+    file_blocklist = load_blocklist(paths["blocklist"])
+    user_blocklist_path = pathlib.Path(__file__).parent / "blocklist.txt"
+    user_blocklist = load_user_blocklist(user_blocklist_path)
+    file_blocklist |= user_blocklist
+    bl_cache = load_cache(paths["blocklist_scrape"])
+
+    # 3. Prefetch Apple Music data
+    apple_cache_path = paths["cache"].parent / "apple_music_cache.json"
+    if args.refresh_apple and apple_cache_path.exists():
+        apple_cache_path.unlink()
+
+    key_id = os.environ.get("APPLE_MUSIC_KEY_ID", "")
+    team_id = os.environ.get("APPLE_MUSIC_TEAM_ID", "")
+    key_path = os.environ.get("APPLE_MUSIC_KEY_PATH", "")
+
+    if key_id and team_id and key_path:
+        print("\nGenerating Apple Music API token...")
+        token = generate_apple_music_token(key_id, team_id, key_path)
+        client = AppleMusicClient(token)
+        print("Prefetching Apple Music similar artists...")
+        apple_cache = prefetch_apple_data(client, library_artists, apple_cache_path)
+        print(f"Apple Music cache: {len(apple_cache)} artists.")
+    else:
+        print("\nApple Music API credentials not configured. "
+              "Apple weight variants will use empty data.")
+        apple_cache = {}
+
+    # 4. Run all scoring variants
+    print(f"\nRunning {len(APPLE_WEIGHTS) * len(NEG_PENALTIES)} scoring variants...")
+    variants = {}
+    for aw in APPLE_WEIGHTS:
+        for np_ in NEG_PENALTIES:
+            scored = score_artists_tunable(
+                cache, library_artists,
+                apple_cache=apple_cache,
+                blocklist_cache=bl_cache,
+                user_blocklist=user_blocklist,
+                apple_weight=aw,
+                neg_penalty=np_,
+            )
+            ranked = filter_candidates(scored, filter_cache_data, file_blocklist)
+            variants[(aw, np_)] = ranked
+
+    # 5. Generate and output report
+    report = generate_report(variants, top_n=TOP_N,
+                             library_count=len(library_artists))
+    print(report)
+
+    # Save to file
+    out_path = OUTPUT_DIR / "tuning_results.md"
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("```\n")
+        f.write(report)
+        f.write("\n```\n")
+    print(f"\nSaved to: {out_path}")
+
+
+if __name__ == "__main__":
+    main()
