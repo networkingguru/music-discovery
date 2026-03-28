@@ -17,6 +17,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 log = logging.getLogger("tuning")
 
+APPLE_WEIGHTS = [0.0, 0.5, 1.0, 1.5]
+NEG_PENALTIES = [0.0, 0.2, 0.4, 0.8]
+TOP_N = 12
+OUTPUT_DIR = pathlib.Path(__file__).parent
+
 
 def prefetch_apple_data(client, library_artists, cache_path):
     """Fetch similar artists from Apple Music API for all library artists.
@@ -105,3 +110,92 @@ def score_artists_tunable(cache, library_artists, *, apple_cache,
 
     return sorted(((v, k) for k, v in scores.items()),
                   key=lambda x: x[0], reverse=True)
+
+
+def generate_report(variants, top_n=TOP_N, library_count=0):
+    """Generate a formatted report comparing all scoring variants.
+
+    Args:
+        variants: {(apple_weight, neg_penalty): [(score, name), ...]}
+        top_n: number of artists to show per variant
+        library_count: number of library artists (for header)
+
+    Returns:
+        Formatted report string.
+    """
+    lines = []
+    lines.append("=" * 70)
+    lines.append("TUNING EXPERIMENT — Scoring Variant Comparison")
+    lines.append(f"Library artists: {library_count}")
+    lines.append(f"Matrix: {len(APPLE_WEIGHTS)} Apple weights × {len(NEG_PENALTIES)} negative penalties = {len(variants)} variants")
+    lines.append(f"Showing top {top_n} per variant")
+    lines.append("=" * 70)
+
+    # Individual variant sections
+    for aw in APPLE_WEIGHTS:
+        for np_ in NEG_PENALTIES:
+            key = (aw, np_)
+            ranked = variants.get(key, [])
+            lines.append("")
+            label = f"apple={aw}, neg={np_}"
+            if aw == 0.0 and np_ == 0.0:
+                label += "  [BASELINE]"
+            lines.append(f"--- {label} ---")
+            for i, (score, name) in enumerate(ranked[:top_n], 1):
+                lines.append(f"  {i:>2}. {name:<35s} ({score:.2f})")
+            if not ranked:
+                lines.append("  (no candidates)")
+
+    # Movement analysis vs baseline
+    baseline_key = (0.0, 0.0)
+    baseline_names = [name for _, name in variants.get(baseline_key, [])[:top_n]]
+
+    lines.append("")
+    lines.append("=" * 70)
+    lines.append("Movement Analysis vs baseline (apple=0.0, neg=0.0)")
+    lines.append("=" * 70)
+
+    for aw in APPLE_WEIGHTS:
+        for np_ in NEG_PENALTIES:
+            if aw == 0.0 and np_ == 0.0:
+                continue
+            key = (aw, np_)
+            variant_names = [name for _, name in variants.get(key, [])[:top_n]]
+            entered = [n for n in variant_names if n not in baseline_names]
+            exited = [n for n in baseline_names if n not in variant_names]
+            if not entered and not exited:
+                continue
+            lines.append(f"\n  apple={aw}, neg={np_}:")
+            lines.append(f"    {len(entered)} entered, {len(exited)} dropped")
+            if entered:
+                lines.append(f"    New:     {', '.join(entered)}")
+            if exited:
+                lines.append(f"    Dropped: {', '.join(exited)}")
+
+    # Biggest movers
+    lines.append("")
+    lines.append("=" * 70)
+    lines.append("BIGGEST MOVERS — artists with largest rank swings")
+    lines.append("=" * 70)
+
+    all_artists = set()
+    for ranked in variants.values():
+        for _, name in ranked[:top_n]:
+            all_artists.add(name)
+
+    rank_ranges = {}
+    for artist in all_artists:
+        ranks = []
+        for key, ranked in variants.items():
+            names = [name for _, name in ranked[:top_n]]
+            if artist in names:
+                ranks.append(names.index(artist) + 1)
+        if len(ranks) >= 2:
+            rank_ranges[artist] = (min(ranks), max(ranks), len(ranks))
+
+    movers = sorted(rank_ranges.items(), key=lambda x: x[1][1] - x[1][0], reverse=True)
+    for artist, (lo, hi, appearances) in movers[:10]:
+        lines.append(f"  {artist:<35s} rank {lo}-{hi} (in {appearances}/{len(variants)} variants)")
+
+    lines.append("")
+    return "\n".join(lines)

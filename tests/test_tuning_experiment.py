@@ -9,7 +9,7 @@ import os
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-from tuning_experiment import score_artists_tunable, prefetch_apple_data
+from tuning_experiment import score_artists_tunable, prefetch_apple_data, generate_report, APPLE_WEIGHTS, NEG_PENALTIES
 
 
 class TestScoreArtistsTunable:
@@ -162,3 +162,53 @@ class TestPrefetchAppleData:
         client.search_artist.assert_called_once_with("portishead")
         assert result["radiohead"] == ["thom yorke", "muse"]
         assert "massive attack" in result["portishead"]
+
+
+class TestGenerateReport:
+    """Test report generation."""
+
+    def test_report_contains_all_variants(self):
+        """Report includes a section for every variant in the matrix."""
+        variants = {}
+        for aw in APPLE_WEIGHTS:
+            for np_ in NEG_PENALTIES:
+                key = (aw, np_)
+                variants[key] = [
+                    (3.0, "artist_a"),
+                    (2.0, "artist_b"),
+                    (1.0, "artist_c"),
+                ]
+        report = generate_report(variants, top_n=3, library_count=10)
+        for aw in APPLE_WEIGHTS:
+            for np_ in NEG_PENALTIES:
+                assert f"apple={aw}" in report
+                assert f"neg={np_}" in report
+
+    def test_report_contains_movement_section(self):
+        """Report includes a movement analysis section."""
+        variants = {}
+        for aw in APPLE_WEIGHTS:
+            for np_ in NEG_PENALTIES:
+                key = (aw, np_)
+                if aw == 0.0 and np_ == 0.0:
+                    variants[key] = [(3.0, "artist_a"), (2.0, "artist_b")]
+                else:
+                    variants[key] = [(3.0, "artist_c"), (2.0, "artist_d")]
+        report = generate_report(variants, top_n=2, library_count=10)
+        assert "Movement" in report or "movement" in report
+
+    def test_report_limits_to_top_n(self):
+        """Each variant section shows at most top_n artists."""
+        variants = {
+            (0.0, 0.0): [(i, f"artist_{i}") for i in range(20, 0, -1)],
+        }
+        for aw in APPLE_WEIGHTS:
+            for np_ in NEG_PENALTIES:
+                if (aw, np_) not in variants:
+                    variants[(aw, np_)] = [(1.0, "x")]
+        report = generate_report(variants, top_n=5, library_count=10)
+        lines = report.split("\n")
+        baseline_entries = [l for l in lines if l.strip().startswith("5.")]
+        assert len(baseline_entries) >= 1
+        rank_6 = [l for l in lines if l.strip().startswith("6.")]
+        assert len(rank_6) == 0
