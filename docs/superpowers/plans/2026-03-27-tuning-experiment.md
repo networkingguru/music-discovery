@@ -469,6 +469,7 @@ Add to `tuning_experiment.py`:
 APPLE_WEIGHTS = [0.0, 0.5, 1.0, 1.5]
 NEG_PENALTIES = [0.0, 0.2, 0.4, 0.8]
 TOP_N = 12
+OUTPUT_DIR = pathlib.Path(__file__).parent
 
 
 def generate_report(variants, top_n=TOP_N, library_count=0):
@@ -666,7 +667,7 @@ def main():
     print(report)
 
     # Save to file
-    out_path = pathlib.Path(__file__).parent / "tuning_results.md"
+    out_path = OUTPUT_DIR / "tuning_results.md"
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("```\n")
         f.write(report)
@@ -691,41 +692,54 @@ from tuning_experiment import main as tuning_main
 class TestMainSmoke:
     """Smoke test for main() wiring."""
 
-    @patch("tuning_experiment.parse_library_jxa")
-    @patch("tuning_experiment.load_cache")
-    @patch("tuning_experiment.load_blocklist")
-    @patch("tuning_experiment.load_user_blocklist")
-    @patch("tuning_experiment.filter_candidates")
-    @patch("tuning_experiment.generate_apple_music_token")
-    @patch("tuning_experiment.AppleMusicClient")
     @patch("tuning_experiment.prefetch_apple_data")
-    def test_main_runs_without_error(self, mock_prefetch, mock_client_cls,
-                                      mock_token, mock_filter, mock_ubl,
-                                      mock_bl, mock_load_cache, mock_jxa,
-                                      tmp_path, monkeypatch):
+    @patch("tuning_experiment.AppleMusicClient")
+    @patch("tuning_experiment.generate_apple_music_token")
+    @patch("tuning_experiment.filter_candidates")
+    @patch("tuning_experiment.load_user_blocklist")
+    @patch("tuning_experiment.load_blocklist")
+    @patch("tuning_experiment.load_cache")
+    @patch("tuning_experiment.load_dotenv")
+    @patch("tuning_experiment._build_paths")
+    @patch("tuning_experiment.parse_library_jxa")
+    def test_main_runs_without_error(self, mock_jxa, mock_paths, mock_dotenv,
+                                      mock_load_cache, mock_bl, mock_ubl,
+                                      mock_filter, mock_token, mock_client_cls,
+                                      mock_prefetch, tmp_path, monkeypatch):
         """main() wires everything together without crashing."""
-        mock_jxa.return_value = {"loved1": 3, "loved2": 1}
-        mock_load_cache.return_value = {
-            "loved1": {"cand_a": 0.9, "cand_b": 0.5},
-            "loved2": {"cand_c": 0.7},
+        # Set up paths to use tmp_path
+        mock_paths.return_value = {
+            "cache": tmp_path / "music_map_cache.json",
+            "filter_cache": tmp_path / "filter_cache.json",
+            "blocklist": tmp_path / "blocklist_cache.json",
+            "blocklist_scrape": tmp_path / "blocklist_scrape_cache.json",
+            "top_tracks": tmp_path / "top_tracks_cache.json",
+            "output": tmp_path / "results.txt",
+            "playlist_xml": tmp_path / "playlist.xml",
         }
+        mock_jxa.return_value = {"loved1": 3, "loved2": 1}
+        # Three load_cache calls: cache, filter_cache, bl_cache
+        mock_load_cache.side_effect = [
+            {"loved1": {"cand_a": 0.9, "cand_b": 0.5}},  # music_map_cache
+            {"cand_a": {"listeners": 1000, "debut_year": 2015}},  # filter_cache
+            {},  # blocklist_scrape_cache
+        ]
         mock_bl.return_value = set()
         mock_ubl.return_value = set()
         mock_filter.side_effect = lambda scored, *a, **kw: scored
         mock_prefetch.return_value = {"loved1": ["cand_d"]}
         mock_token.return_value = "fake-token"
 
-        # Redirect output file to tmp
-        monkeypatch.setattr("tuning_experiment.pathlib.Path.__truediv__",
-                            lambda self, other: tmp_path / other
-                            if other == "tuning_results.md" else
-                            pathlib.Path.__truediv__(self, other))
         monkeypatch.setattr("sys.argv", ["tuning_experiment.py"])
         monkeypatch.setenv("APPLE_MUSIC_KEY_ID", "test")
         monkeypatch.setenv("APPLE_MUSIC_TEAM_ID", "test")
         monkeypatch.setenv("APPLE_MUSIC_KEY_PATH", "/tmp/fake.p8")
 
+        # Patch the output path constant
+        monkeypatch.setattr("tuning_experiment.OUTPUT_DIR", tmp_path)
+
         tuning_main()  # should not raise
+        assert (tmp_path / "tuning_results.md").exists()
 ```
 
 - [ ] **Step 3: Run all tests to verify they pass**
