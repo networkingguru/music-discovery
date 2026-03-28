@@ -23,7 +23,8 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from music_discovery import (
-    _build_paths, load_dotenv, load_cache, load_user_blocklist, parse_library_jxa,
+    _build_paths, load_dotenv, load_cache, load_user_blocklist, load_blocklist,
+    parse_library_jxa,
 )
 from compare_similarity import generate_apple_music_token, AppleMusicClient
 from signal_collectors import (
@@ -120,13 +121,16 @@ def score_post_listen(saved_recs, new_fav_artists, top_n=10):
 
 
 def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
-                   user_blocklist, top_n=TOP_N):
+                   user_blocklist, top_n=TOP_N,
+                   filter_cache=None, file_blocklist=frozenset()):
     """Run all four analysis phases and generate the report."""
     scoring_kwargs = {
         "apple_cache": apple_cache,
         "apple_weight": 0.2,
         "blocklist_cache": rejected_cache,
         "user_blocklist": user_blocklist,
+        "filter_cache": filter_cache,
+        "file_blocklist": file_blocklist,
     }
 
     log.info("\n--- Phase A: Individual Signal Profiling ---")
@@ -152,12 +156,28 @@ def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
     return report, phase_d
 
 
-def get_evaluation_artists(phase_d, top_n=10):
-    """Get the union of top-N artists from all recommended configs."""
+def get_evaluation_artists(phase_d, top_n=10, exclude=None):
+    """Get the union of top-N artists from all recommended configs.
+
+    Args:
+        phase_d: list of recommendation dicts with "ranked" lists.
+        top_n: how many artists per config to consider.
+        exclude: set of lowercase artist names to skip (library, blocklists).
+
+    Returns:
+        sorted list of unique artist names not in exclude set.
+    """
+    if exclude is None:
+        exclude = set()
     artists = set()
     for rec in phase_d:
-        for _, name in rec["ranked"][:top_n]:
-            artists.add(name)
+        count = 0
+        for _, name in rec["ranked"]:
+            if name not in exclude:
+                artists.add(name)
+                count += 1
+            if count >= top_n:
+                break
     return sorted(artists)
 
 
@@ -207,6 +227,10 @@ def main():
     rejected_cache = load_cache(paths["rejected_scrape"])
     user_blocklist = load_user_blocklist(
         pathlib.Path(__file__).parent / "blocklist.txt")
+    filter_cache = load_cache(paths["filter_cache"])
+    file_blocklist = load_blocklist(paths["blocklist"])
+    library_artists = set(signals["favorites"].keys()) | set(signals["playcount"].keys())
+    eval_exclude = library_artists | user_blocklist | file_blocklist
 
     if args.post_listen:
         new_favorites = parse_library_jxa()
@@ -242,7 +266,7 @@ def main():
             log.error("No saved recommendations found. Run the experiment first.")
             sys.exit(1)
         saved_recs = json.loads(recs_path.read_text())
-        eval_artists = get_evaluation_artists(saved_recs, top_n=10)
+        eval_artists = get_evaluation_artists(saved_recs, top_n=10, exclude=eval_exclude)
         log.info(f"\nBuilding evaluation playlist with {len(eval_artists)} artists...")
 
         from music_discovery import (
@@ -278,7 +302,8 @@ def main():
 
     report, phase_d = run_experiment(
         signals, scrape_cache, apple_cache, rejected_cache,
-        user_blocklist, top_n=args.top_n)
+        user_blocklist, top_n=args.top_n,
+        filter_cache=filter_cache, file_blocklist=file_blocklist)
 
     report_path = pathlib.Path(__file__).parent / REPORT_FILENAME
     report_path.write_text(report)
@@ -299,7 +324,7 @@ def main():
         })
     recs_path.write_text(json.dumps(serializable_recs, indent=2))
 
-    eval_artists = get_evaluation_artists(phase_d, top_n=10)
+    eval_artists = get_evaluation_artists(phase_d, top_n=10, exclude=eval_exclude)
     log.info(f"\n=== Evaluation Playlist Artists ({len(eval_artists)}) ===")
     for a in eval_artists:
         log.info(f"  {a}")

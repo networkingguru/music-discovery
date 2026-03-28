@@ -18,8 +18,18 @@ TOP_N = 25
 
 
 def _run_scoring(cache, signals, weights, **kwargs):
-    """Convenience wrapper for scoring with given weights."""
-    return score_candidates_multisignal(cache, signals, weights, **kwargs)
+    """Convenience wrapper for scoring with given weights.
+
+    If filter_cache and file_blocklist are in kwargs, applies
+    filter_candidates after scoring to remove well-known artists.
+    """
+    filter_cache = kwargs.pop("filter_cache", None)
+    file_blocklist = kwargs.pop("file_blocklist", frozenset())
+    ranked = score_candidates_multisignal(cache, signals, weights, **kwargs)
+    if filter_cache is not None:
+        from music_discovery import filter_candidates
+        ranked = filter_candidates(ranked, filter_cache, file_blocklist)
+    return ranked
 
 
 def _top_names(ranked, n):
