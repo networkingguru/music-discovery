@@ -19,7 +19,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from music_discovery import (
     _build_paths, load_dotenv, load_cache,
-    load_blocklist, load_user_blocklist,
+    load_user_blocklist,
     filter_candidates, parse_library_jxa,
 )
 from compare_similarity import (
@@ -28,9 +28,10 @@ from compare_similarity import (
 
 log = logging.getLogger("tuning")
 
-APPLE_WEIGHTS = [0.0, 0.5, 1.0, 1.5]
+APPLE_WEIGHTS = [0.0, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
 NEG_PENALTIES = [0.0, 0.2, 0.4, 0.8]
-TOP_N = 12
+SELECTED_APPLE_WEIGHT = 0.2
+TOP_N = 25
 OUTPUT_DIR = pathlib.Path(__file__).parent
 
 
@@ -61,7 +62,7 @@ def prefetch_apple_data(client, library_artists, cache_path):
         cache[artist] = [s["name"].lower() for s in similar]
         log.info(f"  [{i}/{len(to_fetch)}] {artist} → {len(similar)} similar artists")
         if i < len(to_fetch):
-            time.sleep(1)  # rate limit
+            time.sleep(0.05)  # brief pause between API calls
 
     # Save updated cache
     with open(cache_path, "w", encoding="utf-8") as f:
@@ -232,10 +233,8 @@ def main():
     # 2. Load existing caches (read-only)
     cache = load_cache(paths["cache"])
     filter_cache_data = load_cache(paths["filter_cache"])
-    file_blocklist = load_blocklist(paths["blocklist"])
     user_blocklist_path = pathlib.Path(__file__).parent / "blocklist.txt"
     user_blocklist = load_user_blocklist(user_blocklist_path)
-    file_blocklist |= user_blocklist
     bl_cache = load_cache(paths["blocklist_scrape"])
 
     # 3. Prefetch Apple Music data
@@ -272,7 +271,7 @@ def main():
                 apple_weight=aw,
                 neg_penalty=np_,
             )
-            ranked = filter_candidates(scored, filter_cache_data, file_blocklist)
+            ranked = filter_candidates(scored, filter_cache_data, user_blocklist)
             variants[(aw, np_)] = ranked
 
     # 5. Generate and output report

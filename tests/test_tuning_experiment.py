@@ -223,13 +223,12 @@ class TestMainSmoke:
     @patch("tuning_experiment.generate_apple_music_token")
     @patch("tuning_experiment.filter_candidates")
     @patch("tuning_experiment.load_user_blocklist")
-    @patch("tuning_experiment.load_blocklist")
     @patch("tuning_experiment.load_cache")
     @patch("tuning_experiment.load_dotenv")
     @patch("tuning_experiment._build_paths")
     @patch("tuning_experiment.parse_library_jxa")
     def test_main_runs_without_error(self, mock_jxa, mock_paths, mock_dotenv,
-                                      mock_load_cache, mock_bl, mock_ubl,
+                                      mock_load_cache, mock_ubl,
                                       mock_filter, mock_token, mock_client_cls,
                                       mock_prefetch, tmp_path, monkeypatch):
         """main() wires everything together without crashing."""
@@ -248,7 +247,6 @@ class TestMainSmoke:
             {"cand_a": {"listeners": 1000, "debut_year": 2015}},
             {},
         ]
-        mock_bl.return_value = set()
         mock_ubl.return_value = set()
         mock_filter.side_effect = lambda scored, *a, **kw: scored
         mock_prefetch.return_value = {"loved1": ["cand_d"]}
