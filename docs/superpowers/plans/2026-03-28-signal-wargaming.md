@@ -257,11 +257,11 @@ def acquire_user_token(developer_token, dotenv_path, port=DEFAULT_PORT):
     server_thread = threading.Thread(target=server.serve_until_token, daemon=True)
     server_thread.start()
 
-    # Try Playwright automation
-    token = _try_playwright_auth(url)
-    if token:
-        save_user_token(token, dotenv_path)
-        return token
+    # Try Playwright automation (token arrives via server callback)
+    _try_playwright_auth(url)
+    if server.user_token:
+        save_user_token(server.user_token, dotenv_path)
+        return server.user_token
 
     # Fallback: open browser for manual auth
     log.info(f"Opening browser for Apple Music authorization: {url}")
@@ -334,7 +334,7 @@ New JXA-based collectors for play count and playlist membership signals. Separat
 # tests/test_signal_collectors.py
 import json
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 def test_collect_playcounts_aggregates_by_artist():
@@ -496,14 +496,19 @@ def test_collect_playlists_skips_smart_and_apple_playlists():
 
 
 def test_collect_playlists_excludes_music_discovery():
-    """The 'Music Discovery' playlist should be excluded (it's our output)."""
+    """The 'Music Discovery' playlist should be excluded (it's our output).
+    Note: JXA script handles this exclusion, but we add Python-side filtering
+    as defense-in-depth since tests mock _run_jxa."""
     from signal_collectors import collect_user_playlists_jxa
     fake_output = json.dumps([
         {"name": "My Mix", "tracks": [{"artist": "Haken"}]},
+        {"name": "Music Discovery", "tracks": [{"artist": "Tool"}, {"artist": "Meshuggah"}]},
     ])
     with patch("signal_collectors._run_jxa", return_value=(fake_output, 0)):
         result = collect_user_playlists_jxa()
     assert result == {"haken": 1}
+    assert "tool" not in result
+    assert "meshuggah" not in result
 
 
 def test_collect_playlists_jxa_failure():
@@ -567,6 +572,9 @@ JSON.stringify(result);
 
     counts = {}
     for pl in playlists:
+        # Skip Music Discovery playlist (defense-in-depth, JXA also filters)
+        if pl.get("name") == "Music Discovery":
+            continue
         # Deduplicate artists within a single playlist
         artists_in_pl = set()
         for t in pl.get("tracks", []):
@@ -1045,10 +1053,10 @@ def test_score_candidates_zero_weight_artist_excluded():
                "heavy_rotation": 0.0, "recommendations": 0.0}
     ranked = score_candidates_multisignal(cache, signals, weights)
     names = [name for _, name in ranked]
+    scores = {name: score for score, name in ranked}
     assert "umpfel" in names
-    # "other" should still appear but with zero score from "unknown"
-    # Actually "unknown" is in the cache keys (library set), so "unknown" is excluded
-    # but "other" gets 0 contribution since unknown has 0 seed weight
+    # "unknown" has 0 seed weight, so "other" gets 0 contribution
+    assert scores.get("other", 0.0) == 0.0
 ```
 
 - [ ] **Step 6: Run tests to verify they fail**
@@ -1596,15 +1604,14 @@ def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
     phase_a = run_phase_a(cache, signals, top_n=top_n, **scoring_kwargs)
 
     # Determine which signals have unique contributions
-    active_signals = []
+    active_signals = set()
     for sig in ALL_SIGNALS:
         data = phase_a[sig]
-        has_ranked = len(data["ranked"]) > 0
-        has_unique = len(data["unique"]) > 0
-        if has_ranked:
-            active_signals.append(sig)
+        if len(data["ranked"]) > 0:
+            active_signals.add(sig)
 
-    # Build recommendations
+    # Build recommendations — start from templates, then zero out
+    # any signal that has no data (active_signals check)
     recommendations = [
         {
             "name": "Favorites-Heavy",
@@ -1642,6 +1649,22 @@ def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
                         "heavy_rotation": 1.0, "recommendations": 1.0},
         },
     ]
+
+    # Zero out weights for signals with no data
+    for rec in recommendations:
+        for sig in ALL_SIGNALS:
+            if sig not in active_signals:
+                rec["weights"][sig] = 0.0
+
+    # Drop any configs that become identical after zeroing inactive signals
+    seen = set()
+    unique_recs = []
+    for rec in recommendations:
+        key = tuple(sorted(rec["weights"].items()))
+        if key not in seen:
+            seen.add(key)
+            unique_recs.append(rec)
+    recommendations = unique_recs
 
     # Score each recommendation and compute baseline diff
     for rec in recommendations:
@@ -2158,6 +2181,31 @@ def collect_all_signals(cache_dir, api_session=None, refresh=False):
     }
 
 
+def score_post_listen(saved_recs, new_fav_artists, top_n=10):
+    """Score each recommended config against the user's new favorites.
+
+    Args:
+        saved_recs: list of recommendation dicts (from Phase D).
+        new_fav_artists: set of lowercase artist names newly favorited.
+        top_n: how many of each config's top artists to evaluate.
+
+    Returns:
+        list of {name, hits, precision, matched} dicts.
+    """
+    results = []
+    for rec in saved_recs:
+        top_names = [name for _, name in rec["ranked"][:top_n]]
+        hits = [n for n in top_names if n in new_fav_artists]
+        precision = len(hits) / len(top_names) * 100 if top_names else 0
+        results.append({
+            "name": rec["name"],
+            "hits": len(hits),
+            "precision": precision,
+            "matched": hits,
+        })
+    return results
+
+
 def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
                    user_blocklist, top_n=TOP_N):
     """Run all four analysis phases and generate the report.
@@ -2184,7 +2232,11 @@ def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
     log.info("--- Phase D: Recommendations ---")
     phase_d = run_phase_d(scrape_cache, signals, top_n=top_n, **scoring_kwargs)
 
-    library_count = len(signals["favorites"])
+    library_count = len(set().union(
+        signals["favorites"].keys(),
+        signals["playcount"].keys(),
+        signals["playlists"].keys(),
+    ))
     report = generate_wargaming_report(phase_a, phase_b, phase_c, phase_d,
                                         library_count=library_count, top_n=top_n)
 
@@ -2212,9 +2264,14 @@ def main():
                         help="Re-collect all data, ignoring caches")
     parser.add_argument("--post-listen", action="store_true",
                         help="Score configs against new favorites after listening")
+    parser.add_argument("--build-playlist", action="store_true",
+                        help="Build evaluation playlist from recommended configs' top artists")
     parser.add_argument("--top-n", type=int, default=TOP_N,
                         help=f"Number of top artists per analysis (default: {TOP_N})")
     args = parser.parse_args()
+
+    if args.post_listen and args.build_playlist:
+        parser.error("Cannot use --post-listen and --build-playlist together")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -2449,11 +2506,12 @@ git commit -m "feat: add --build-playlist flag for evaluation playlist from reco
 
 ---
 
-### Task 10: Update .env.example and Cache Path Registration
+### Task 10: Update .env.example
 
 **Files:**
 - Modify: `.env.example`
-- Modify: `music_discovery.py` (add new cache paths to `_build_paths`)
+
+Note: New cache paths are managed directly by `signal_experiment.py` using `cache_dir`, not registered in `_build_paths`. This keeps the experiment self-contained.
 
 - [ ] **Step 1: Update .env.example with user token field**
 
@@ -2608,85 +2666,21 @@ def test_post_listen_scoring(tmp_path):
     assert results[1]["hits"] == 2
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it passes**
 
-Run: `cd "/Users/brianhill/Scripts/Music Discovery" && python -m pytest tests/test_signal_experiment.py::test_post_listen_scoring -v`
-Expected: FAIL — `score_post_listen` not found.
-
-- [ ] **Step 3: Extract post-listen scoring into a testable function**
-
-Add to `signal_experiment.py`:
-
-```python
-def score_post_listen(saved_recs, new_fav_artists, top_n=10):
-    """Score each recommended config against the user's new favorites.
-
-    Args:
-        saved_recs: list of recommendation dicts (from Phase D).
-        new_fav_artists: set of lowercase artist names newly favorited.
-        top_n: how many of each config's top artists to evaluate.
-
-    Returns:
-        list of {name, hits, precision, matched} dicts.
-    """
-    results = []
-    for rec in saved_recs:
-        top_names = [name for _, name in rec["ranked"][:top_n]]
-        hits = [n for n in top_names if n in new_fav_artists]
-        precision = len(hits) / len(top_names) * 100 if top_names else 0
-        results.append({
-            "name": rec["name"],
-            "hits": len(hits),
-            "precision": precision,
-            "matched": hits,
-        })
-    return results
-```
-
-Update the `if args.post_listen:` block in `main()` to use this function:
-
-```python
-    if args.post_listen:
-        new_favorites = parse_library_jxa()
-        fav_snapshot_path = cache_dir / "favorites_snapshot.json"
-        if not fav_snapshot_path.exists():
-            log.error("No favorites snapshot found. Run the experiment first.")
-            sys.exit(1)
-        old_favorites = json.loads(fav_snapshot_path.read_text())
-        new_fav_artists = set(new_favorites.keys()) - set(old_favorites.keys())
-        log.info(f"\nNew favorites since last run: {len(new_fav_artists)} artists")
-        if new_fav_artists:
-            log.info(f"  {', '.join(sorted(new_fav_artists))}")
-
-        recs_path = cache_dir / "signal_wargaming_recs.json"
-        if not recs_path.exists():
-            log.error("No saved recommendations found. Run the experiment first.")
-            sys.exit(1)
-        saved_recs = json.loads(recs_path.read_text())
-
-        results = score_post_listen(saved_recs, new_fav_artists)
-        log.info("\n=== Post-Listen Scoring ===\n")
-        for r in results:
-            log.info(f"{r['name']}:")
-            log.info(f"  Hits: {r['hits']}/10 ({r['precision']:.0f}% precision)")
-            if r["matched"]:
-                log.info(f"  Matched: {', '.join(r['matched'])}")
-        return
-```
-
-- [ ] **Step 4: Run test to verify it passes**
+`score_post_listen` was already defined in Task 8's `signal_experiment.py`. This test validates it.
 
 Run: `cd "/Users/brianhill/Scripts/Music Discovery" && python -m pytest tests/test_signal_experiment.py::test_post_listen_scoring -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run full test suite**
+- [ ] **Step 3: Run full test suite**
 
 Run: `cd "/Users/brianhill/Scripts/Music Discovery" && python -m pytest -v`
 Expected: All tests PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add signal_experiment.py tests/test_signal_experiment.py
-git commit -m "feat: add post-listen scoring to evaluate recommended configs against user favorites"
+git add tests/test_signal_experiment.py
+git commit -m "test: add post-listen scoring test"
 ```
