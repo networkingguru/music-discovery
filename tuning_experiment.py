@@ -235,7 +235,7 @@ def main():
     filter_cache_data = load_cache(paths["filter_cache"])
     user_blocklist_path = pathlib.Path(__file__).parent / "blocklist.txt"
     user_blocklist = load_user_blocklist(user_blocklist_path)
-    bl_cache = load_cache(paths["blocklist_scrape"])
+    bl_cache = load_cache(paths["rejected_scrape"])
 
     # 3. Prefetch Apple Music data
     apple_cache_path = paths["cache"].parent / "apple_music_cache.json"

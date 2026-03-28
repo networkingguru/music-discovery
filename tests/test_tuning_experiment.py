@@ -236,7 +236,7 @@ class TestMainSmoke:
             "cache": tmp_path / "music_map_cache.json",
             "filter_cache": tmp_path / "filter_cache.json",
             "blocklist": tmp_path / "blocklist_cache.json",
-            "blocklist_scrape": tmp_path / "blocklist_scrape_cache.json",
+            "rejected_scrape": tmp_path / "rejected_scrape_cache.json",
             "top_tracks": tmp_path / "top_tracks_cache.json",
             "output": tmp_path / "results.txt",
             "playlist_xml": tmp_path / "playlist.xml",

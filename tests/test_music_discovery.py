@@ -349,6 +349,60 @@ def test_negative_penalty_milder_than_positive():
     min_positive_weight = math.log(1 + 1) ** 0.5
     assert md.NEGATIVE_PENALTY < min_positive_weight
 
+def test_rejected_artists_excludes_manual_blocklist():
+    """rejected_artists = file_blocklist - user_blocklist (taste rejections only)."""
+    # Simulate what main() does: file_blocklist from blocklist_cache.json
+    # contains both auto-rejected and manual entries
+    file_blocklist = {"arch echo", "chon", "reo speedwagon", "blondie"}
+    user_blocklist = {"reo speedwagon", "blondie"}
+    rejected_artists = file_blocklist - user_blocklist
+
+    assert rejected_artists == {"arch echo", "chon"}
+    assert "reo speedwagon" not in rejected_artists
+    assert "blondie" not in rejected_artists
+
+
+def test_negative_scoring_effective_with_rejected_artists():
+    """Rejected artists (former candidates) have neighbor overlap with current candidates.
+    Manual blocklist artists (classic pop/rock) do not.
+    This test demonstrates the rework rationale."""
+    # Candidate pool: prog metal / math rock
+    cache = {
+        "haken": {"leprous": 0.9, "caligulas horse": 0.85, "tesseract": 0.8},
+        "animals as leaders": {"plini": 0.88, "chon": 0.82, "polyphia": 0.75},
+    }
+    library = {"haken": 3, "animals as leaders": 2}
+
+    # Manual blocklist neighbors: classic pop/rock — NO overlap with prog candidates
+    manual_bl_cache = {
+        "reo speedwagon": {"air supply": 0.78, "loverboy": 0.76, "mr. mister": 0.80},
+    }
+
+    # Rejected artist neighbors: former candidates — HIGH overlap
+    rejected_bl_cache = {
+        "chon": {"polyphia": 0.90, "plini": 0.85, "covet": 0.80},
+    }
+
+    user_blocklist = {"reo speedwagon"}
+
+    # With manual blocklist scrape: scores unchanged (no overlap)
+    scored_manual = md.score_artists(cache, library, manual_bl_cache, user_blocklist)
+    scored_manual_d = {name: s for s, name in scored_manual}
+
+    # With rejected artist scrape: polyphia and plini get penalized
+    scored_rejected = md.score_artists(cache, library, rejected_bl_cache, user_blocklist)
+    scored_rejected_d = {name: s for s, name in scored_rejected}
+
+    # polyphia appears in both loved and rejected neighborhoods — should be penalized
+    assert scored_rejected_d["polyphia"] < scored_manual_d["polyphia"]
+
+    # plini appears in both loved and rejected neighborhoods — should be penalized
+    assert scored_rejected_d["plini"] < scored_manual_d["plini"]
+
+    # leprous only in loved neighborhoods — score identical either way
+    assert scored_rejected_d["leprous"] == pytest.approx(scored_manual_d["leprous"], abs=1e-9)
+
+
 def test_fetch_filter_data_returns_listeners_and_debut():
     """Returns dict with listeners (int) and debut_year (int)."""
     search_resp = MagicMock()

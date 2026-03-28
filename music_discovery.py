@@ -76,7 +76,7 @@ MAX_PLAYLIST_TRACKS = 500  # hard cap — abort if playlist exceeds this
 MD_PLAYLIST_NAME    = "Music Discovery"
 UNPLAYED_WARN_PCT   = 25   # prompt user if more than this % of MD playlist is unplayed
 MB_USER_AGENT       = "MusicDiscoveryTool/1.0 (https://github.com/networkingguru/music-discovery)"
-NEGATIVE_PENALTY    = 0.4   # penalty factor for candidates near manually blocklisted artists
+NEGATIVE_PENALTY    = 0.4   # penalty factor for candidates near rejected discovery artists
 
 # Artists/non-artists that slip through the listener-count filter due to missing
 # or wrong Last.fm data. Names must be lowercase to match scored candidate names.
@@ -336,7 +336,7 @@ def _build_paths():
         "cache":        cache_dir  / "music_map_cache.json",
         "filter_cache": cache_dir  / "filter_cache.json",
         "blocklist":    cache_dir  / "blocklist_cache.json",
-        "blocklist_scrape": cache_dir  / "blocklist_scrape_cache.json",
+        "rejected_scrape": cache_dir  / "rejected_scrape_cache.json",
         "top_tracks":   cache_dir  / "top_tracks_cache.json",
         "output":       output_dir / "music_discovery_results.txt",
         "playlist_xml": output_dir / "Music Discovery.xml",
@@ -1302,19 +1302,19 @@ def score_artists(cache, library_artists, blocklist_cache=None, user_blocklist=N
     Positive scoring (from loved artists):
         score(candidate) += sqrt(log(loved_count_i + 1)) * proximity(i, candidate)
 
-    Negative scoring (from manually blocklisted artists):
-        score(candidate) -= NEGATIVE_PENALTY * proximity(b, candidate)
+    Negative scoring (from rejected discovery artists):
+        score(candidate) -= NEGATIVE_PENALTY * proximity(rejected_artist, candidate)
 
     The penalty is inherently milder because:
     - NEGATIVE_PENALTY (0.4) is a flat constant, while positive weights are
       sqrt(log(loved_count + 1)) which ranges from ~0.83 (loved=1) to ~1.7 (loved=10+).
-    - Loved artists typically have many more entries in the cache than blocklisted artists.
+    - Loved artists typically have many more entries in the cache than rejected artists.
 
     Args:
         cache: {artist: {similar_artist: proximity}} from music-map scrape of loved artists.
         library_artists: {artist: loved_count} dict from parse_library().
         blocklist_cache: {artist: {similar_artist: proximity}} from music-map scrape of
-                         user-blocklisted artists. None or {} to skip negative scoring.
+                         rejected discovery artists. None or {} to skip negative scoring.
         user_blocklist: set of lowercase artist names from blocklist.txt.
                         Used to exclude blocklisted artists themselves from results.
                         None or empty set to skip.
@@ -1340,7 +1340,7 @@ def score_artists(cache, library_artists, blocklist_cache=None, user_blocklist=N
             if candidate not in exclude:
                 scores[candidate] = scores.get(candidate, 0.0) + weight * proximity
 
-    # Negative scoring from manually blocklisted artists
+    # Negative scoring from rejected discovery artists
     for bl_artist, similar in blocklist_cache.items():
         if not isinstance(similar, dict):
             continue  # skip stale flat-list entries
@@ -1425,6 +1425,7 @@ def main():
     file_blocklist = load_blocklist(paths["blocklist"])
     user_blocklist_path = pathlib.Path(__file__).parent / "blocklist.txt"
     user_blocklist = load_user_blocklist(user_blocklist_path)
+    rejected_artists = file_blocklist - user_blocklist  # taste rejections from playlist audit
     file_blocklist |= user_blocklist
 
     # ── 2b. Audit previous Music Discovery playlist ────────
@@ -1496,46 +1497,46 @@ end tell
     else:
         log.info("All artists already cached — skipping scrape.\n")
 
-    # ── 4b. Scrape blocklisted artists for negative scoring ──
-    bl_cache = load_cache(paths["blocklist_scrape"])
+    # ── 4b. Scrape rejected artists for negative scoring ──
+    rejected_cache = load_cache(paths["rejected_scrape"])
 
-    # Remove entries for artists no longer in user_blocklist
-    stale_bl = [a for a in bl_cache if a not in user_blocklist]
-    if stale_bl:
-        log.info(f"Removing {len(stale_bl)} artist(s) no longer in blocklist from scrape cache.")
-        for a in stale_bl:
-            del bl_cache[a]
-        save_cache(bl_cache, paths["blocklist_scrape"])
+    # Remove entries for artists no longer rejected
+    stale_rejected = [a for a in rejected_cache if a not in rejected_artists]
+    if stale_rejected:
+        log.info(f"Removing {len(stale_rejected)} artist(s) no longer rejected from scrape cache.")
+        for a in stale_rejected:
+            del rejected_cache[a]
+        save_cache(rejected_cache, paths["rejected_scrape"])
 
     # Re-scrape stale format entries
-    stale_bl_format = stale_cache_keys(bl_cache)
-    if stale_bl_format:
-        log.info(f"Re-scraping {len(stale_bl_format)} stale blocklist cache entries...")
-        for k in stale_bl_format:
-            del bl_cache[k]
-        save_cache(bl_cache, paths["blocklist_scrape"])
+    stale_fmt = stale_cache_keys(rejected_cache)
+    if stale_fmt:
+        log.info(f"Re-scraping {len(stale_fmt)} stale rejected artist cache entries...")
+        for k in stale_fmt:
+            del rejected_cache[k]
+        save_cache(rejected_cache, paths["rejected_scrape"])
 
-    bl_to_scrape = [a for a in user_blocklist if a not in bl_cache]
+    to_scrape_rejected = [a for a in rejected_artists if a not in rejected_cache]
 
-    if bl_to_scrape:
+    if to_scrape_rejected:
         if not to_scrape:
             # scraper may not have been initialized if all loved artists were cached
             scrape = detect_scraper()
-        log.info(f"\nScraping {len(bl_to_scrape)} blocklisted artist(s) for negative scoring...\n")
-        for i, artist in enumerate(bl_to_scrape, 1):
-            log.info(f"[{i}/{len(bl_to_scrape)}] Scraping (blocklist): {artist}")
+        log.info(f"\nScraping {len(to_scrape_rejected)} rejected artist(s) for negative scoring...\n")
+        for i, artist in enumerate(to_scrape_rejected, 1):
+            log.info(f"[{i}/{len(to_scrape_rejected)}] Scraping (rejected): {artist}")
             similar = scrape(artist)
-            bl_cache[artist] = similar
-            save_cache(bl_cache, paths["blocklist_scrape"])
+            rejected_cache[artist] = similar
+            save_cache(rejected_cache, paths["rejected_scrape"])
             time.sleep(RATE_LIMIT)
     else:
-        if user_blocklist:
-            log.info("All blocklisted artists already cached — skipping blocklist scrape.\n")
+        if rejected_artists:
+            log.info("All rejected artists already cached — skipping rejected scrape.\n")
 
     # ── 5. Score ───────────────────────────────────────────
     log.info("\nScoring candidates...")
     scored = score_artists(cache, library_artists,
-                           blocklist_cache=bl_cache, user_blocklist=user_blocklist)
+                           blocklist_cache=rejected_cache, user_blocklist=user_blocklist)
 
     # ── 6. Fetch filter data for new candidates ────────────
     if api_key:
