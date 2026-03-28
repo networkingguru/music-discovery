@@ -1,0 +1,62 @@
+<!-- auth_musickit.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Music Discovery — Apple Music Authorization</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; max-width: 500px; margin: 80px auto; text-align: center; }
+        button { font-size: 18px; padding: 12px 32px; cursor: pointer; border-radius: 8px; border: none; background: #fa243c; color: white; }
+        button:hover { background: #d91e34; }
+        #status { margin-top: 20px; color: #666; }
+        .success { color: #28a745 !important; font-weight: bold; }
+        .error { color: #dc3545 !important; }
+    </style>
+</head>
+<body>
+    <h1>Apple Music Authorization</h1>
+    <p>Click below to connect your Apple Music account.<br>This grants read-only access to your listening history.</p>
+    <button id="auth-btn" onclick="authorize()">Connect to Apple Music</button>
+    <div id="status"></div>
+
+    <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"
+            data-web-components
+            crossorigin></script>
+    <script>
+        const DEVELOPER_TOKEN = "{{DEVELOPER_TOKEN}}";
+        let music;
+
+        document.addEventListener("musickitloaded", async () => {
+            music = await MusicKit.configure({
+                developerToken: DEVELOPER_TOKEN,
+                app: { name: "Music Discovery", build: "1.0" },
+            });
+        });
+
+        async function authorize() {
+            const status = document.getElementById("status");
+            const btn = document.getElementById("auth-btn");
+            try {
+                btn.disabled = true;
+                status.textContent = "Waiting for Apple Music authorization...";
+                const token = await music.authorize();
+                status.textContent = "Sending token...";
+                const resp = await fetch("/callback", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({token: token}),
+                });
+                if (resp.ok) {
+                    status.textContent = "Authorization complete! You can close this tab.";
+                    status.className = "success";
+                } else {
+                    throw new Error("Server rejected the token");
+                }
+            } catch (e) {
+                status.textContent = "Authorization failed: " + e.message;
+                status.className = "error";
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
