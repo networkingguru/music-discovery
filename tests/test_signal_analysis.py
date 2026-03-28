@@ -79,3 +79,69 @@ def test_phase_b_dropping_signal_changes_results():
         for data in results.values()
     )
     assert any_changes
+
+
+def test_phase_c_produces_all_scenarios():
+    from signal_analysis import run_phase_c, SCENARIOS
+    cache, signals = _make_test_data()
+    results = run_phase_c(cache, signals, top_n=10)
+    assert set(results.keys()) == set(SCENARIOS.keys())
+    for scenario_name, data in results.items():
+        assert "ranked" in data
+        assert "full_overlap" in data
+        assert "weights" in data
+
+
+def test_phase_c_baseline_uses_only_favorites():
+    from signal_analysis import run_phase_c
+    cache, signals = _make_test_data()
+    results = run_phase_c(cache, signals, top_n=10)
+    w = results["baseline"]["weights"]
+    assert w["favorites"] > 0
+    assert w["playcount"] == 0
+    assert w["heavy_rotation"] == 0
+
+
+def test_phase_c_no_favorites_zeroes_favorites():
+    from signal_analysis import run_phase_c
+    cache, signals = _make_test_data()
+    results = run_phase_c(cache, signals, top_n=10)
+    assert results["no_favorites"]["weights"]["favorites"] == 0.0
+
+
+def test_phase_c_light_listener_caps_playcount():
+    from signal_analysis import run_phase_c
+    cache, signals = _make_test_data()
+    results = run_phase_c(cache, signals, top_n=10)
+    assert "caps" in results["light_listener"]
+    assert results["light_listener"]["caps"].get("playcount") == 5
+
+
+def test_phase_d_produces_recommendations():
+    from signal_analysis import run_phase_d
+    cache, signals = _make_test_data()
+    recs = run_phase_d(cache, signals, top_n=10)
+    assert 3 <= len(recs) <= 5
+    for rec in recs:
+        assert "name" in rec
+        assert "rationale" in rec
+        assert "weights" in rec
+        assert "ranked" in rec
+        assert "baseline_diff" in rec
+
+
+def test_phase_d_recommendations_have_different_weights():
+    from signal_analysis import run_phase_d
+    cache, signals = _make_test_data()
+    recs = run_phase_d(cache, signals, top_n=10)
+    weight_tuples = [tuple(sorted(r["weights"].items())) for r in recs]
+    assert len(set(weight_tuples)) == len(weight_tuples)
+
+
+def test_phase_d_baseline_diff_contains_entered_and_dropped():
+    from signal_analysis import run_phase_d
+    cache, signals = _make_test_data()
+    recs = run_phase_d(cache, signals, top_n=10)
+    for rec in recs:
+        assert "entered" in rec["baseline_diff"]
+        assert "dropped" in rec["baseline_diff"]
