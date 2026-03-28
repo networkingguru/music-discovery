@@ -127,32 +127,30 @@ class TestAppleMusicClient:
 
 class TestCompareForArtist:
     @patch("compare_similarity.time.sleep")
-    @patch("compare_similarity.scrape_musicmap_requests")
-    def test_overlap_detection(self, mock_musicmap, mock_sleep):
-        mock_musicmap.return_value = {
+    def test_overlap_detection(self, mock_sleep):
+        mock_scrape = MagicMock(return_value={
             "thom yorke": 0.9,
             "portishead": 0.7,
             "massive attack": 0.6,
-        }
+        })
         apple_client = MagicMock()
         apple_client.search_artist.return_value = ("111", "Radiohead")
         apple_client.get_similar_artists.return_value = [
             {"name": "Thom Yorke", "id": "A1"},
             {"name": "Muse", "id": "A2"},
         ]
-        result = compare_for_artist("radiohead", apple_client)
+        result = compare_for_artist("radiohead", apple_client, mock_scrape)
         assert "thom yorke" in result["overlap"]
         assert "muse" in result["apple_only"]
         assert "portishead" in result["musicmap_only"]
         assert "massive attack" in result["musicmap_only"]
 
     @patch("compare_similarity.time.sleep")
-    @patch("compare_similarity.scrape_musicmap_requests")
-    def test_apple_not_found_fallback(self, mock_musicmap, mock_sleep):
-        mock_musicmap.return_value = {"artist a": 0.8, "artist b": 0.5}
+    def test_apple_not_found_fallback(self, mock_sleep):
+        mock_scrape = MagicMock(return_value={"artist a": 0.8, "artist b": 0.5})
         apple_client = MagicMock()
         apple_client.search_artist.return_value = (None, None)
-        result = compare_for_artist("unknownartist", apple_client)
+        result = compare_for_artist("unknownartist", apple_client, mock_scrape)
         assert result["apple_id"] is None
         assert result["apple_similar"] == []
         assert sorted(result["musicmap_only"]) == ["artist a", "artist b"]

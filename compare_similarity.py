@@ -32,7 +32,7 @@ from music_discovery import (
     load_dotenv,
     _resolve_library_path,
     parse_library,
-    scrape_musicmap_requests,
+    detect_scraper,
 )
 
 APPLE_MUSIC_BASE = "https://api.music.apple.com/v1/catalog"
@@ -111,7 +111,7 @@ class AppleMusicClient:
         return results
 
 
-def compare_for_artist(artist_name, apple_client):
+def compare_for_artist(artist_name, apple_client, scrape_fn):
     """Fetch similar artists from both sources and return comparison data."""
     result = {
         "artist": artist_name, "apple_id": None, "apple_matched_name": None,
@@ -119,7 +119,7 @@ def compare_for_artist(artist_name, apple_client):
         "overlap": [], "apple_only": [], "musicmap_only": [],
     }
     print(f"  Fetching music-map.com data...")
-    musicmap_data = scrape_musicmap_requests(artist_name)
+    musicmap_data = scrape_fn(artist_name)
     result["musicmap_similar"] = musicmap_data
     time.sleep(0.5)
 
@@ -276,6 +276,9 @@ def main():
 
     apple_client = AppleMusicClient(token)
 
+    print("Detecting music-map.com scraper method...")
+    scrape_fn = detect_scraper()
+
     if args.artists:
         artist_names = [a.strip().lower() for a in args.artists.split(",") if a.strip()]
         print(f"\nComparing {len(artist_names)} specified artists...")
@@ -288,7 +291,7 @@ def main():
     results = []
     for i, artist in enumerate(artist_names, 1):
         print(f"\n[{i}/{len(artist_names)}] {artist}")
-        result = compare_for_artist(artist, apple_client)
+        result = compare_for_artist(artist, apple_client, scrape_fn)
         results.append(result)
 
     print_report(results)
