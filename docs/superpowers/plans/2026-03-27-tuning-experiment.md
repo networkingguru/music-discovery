@@ -97,9 +97,9 @@ class TestScoreArtistsTunable:
             apple_cache={}, blocklist_cache={}, user_blocklist=set(),
             apple_weight=0.0, neg_penalty=0.0,
         )
-        score_with = result_with[0][0]
-        score_without = result_without[0][0]
-        assert score_with == score_without  # no double-counting
+        scores_with = {name: score for score, name in result_with}
+        scores_without = {name: score for score, name in result_without}
+        assert scores_with["cand_a"] == scores_without["cand_a"]  # no double-counting
 
     def test_negative_penalty_reduces_score(self):
         """Negative penalty reduces score for candidates near blocklisted artists."""
@@ -216,7 +216,7 @@ def score_artists_tunable(cache, library_artists, *, apple_cache,
                 continue
             musicmap_similar = cache.get(lib_artist, {})
             for candidate in apple_similar:
-                candidate_lower = candidate.lower() if candidate != candidate.lower() else candidate
+                candidate_lower = candidate.lower()
                 if candidate_lower not in exclude and candidate_lower not in musicmap_similar:
                     scores[candidate_lower] = scores.get(candidate_lower, 0.0) + apple_weight
 
@@ -453,7 +453,7 @@ class TestGenerateReport:
         baseline_entries = [l for l in lines if l.strip().startswith("5.")]
         assert len(baseline_entries) >= 1  # at least one variant has a #5
         rank_6 = [l for l in lines if l.strip().startswith("6.")]
-        # No #6 entries in variant sections (movement section may mention artists)
+        assert len(rank_6) == 0  # no #6 entries — top_n=5 should cap it
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -680,15 +680,63 @@ if __name__ == "__main__":
 
 Note: Move the existing imports (`math`, `sys`, `pathlib`) to the top and add the new ones (`json`, `time`, `logging`, `os`, `argparse`, and the `music_discovery`/`compare_similarity` imports). The final file should have all imports at the top.
 
-- [ ] **Step 2: Run unit tests to verify nothing broke**
+- [ ] **Step 2: Write smoke test for `main()`**
+
+Add to `tests/test_tuning_experiment.py`:
+
+```python
+from tuning_experiment import main as tuning_main
+
+
+class TestMainSmoke:
+    """Smoke test for main() wiring."""
+
+    @patch("tuning_experiment.parse_library_jxa")
+    @patch("tuning_experiment.load_cache")
+    @patch("tuning_experiment.load_blocklist")
+    @patch("tuning_experiment.load_user_blocklist")
+    @patch("tuning_experiment.filter_candidates")
+    @patch("tuning_experiment.generate_apple_music_token")
+    @patch("tuning_experiment.AppleMusicClient")
+    @patch("tuning_experiment.prefetch_apple_data")
+    def test_main_runs_without_error(self, mock_prefetch, mock_client_cls,
+                                      mock_token, mock_filter, mock_ubl,
+                                      mock_bl, mock_load_cache, mock_jxa,
+                                      tmp_path, monkeypatch):
+        """main() wires everything together without crashing."""
+        mock_jxa.return_value = {"loved1": 3, "loved2": 1}
+        mock_load_cache.return_value = {
+            "loved1": {"cand_a": 0.9, "cand_b": 0.5},
+            "loved2": {"cand_c": 0.7},
+        }
+        mock_bl.return_value = set()
+        mock_ubl.return_value = set()
+        mock_filter.side_effect = lambda scored, *a, **kw: scored
+        mock_prefetch.return_value = {"loved1": ["cand_d"]}
+        mock_token.return_value = "fake-token"
+
+        # Redirect output file to tmp
+        monkeypatch.setattr("tuning_experiment.pathlib.Path.__truediv__",
+                            lambda self, other: tmp_path / other
+                            if other == "tuning_results.md" else
+                            pathlib.Path.__truediv__(self, other))
+        monkeypatch.setattr("sys.argv", ["tuning_experiment.py"])
+        monkeypatch.setenv("APPLE_MUSIC_KEY_ID", "test")
+        monkeypatch.setenv("APPLE_MUSIC_TEAM_ID", "test")
+        monkeypatch.setenv("APPLE_MUSIC_KEY_PATH", "/tmp/fake.p8")
+
+        tuning_main()  # should not raise
+```
+
+- [ ] **Step 3: Run all tests to verify they pass**
 
 Run: `cd /Users/brianhill/Scripts/Music\ Discovery && python -m pytest tests/test_tuning_experiment.py -v`
-Expected: All 12 tests PASS
+Expected: All 13 tests PASS
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add tuning_experiment.py
+git add tuning_experiment.py tests/test_tuning_experiment.py
 git commit -m "feat: add main() to wire up tuning experiment end-to-end"
 ```
 
