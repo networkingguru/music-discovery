@@ -120,3 +120,58 @@ JSON.stringify(result);
             counts[artist] = counts.get(artist, 0) + 1
 
     return counts
+
+
+APPLE_MUSIC_API_BASE = "https://api.music.apple.com/v1/me"
+
+
+def _make_user_session(developer_token, user_token):
+    """Create a requests.Session with both developer and user tokens."""
+    import requests
+    session = requests.Session()
+    session.headers.update({
+        "Authorization": f"Bearer {developer_token}",
+        "Music-User-Token": user_token,
+        "Content-Type": "application/json",
+    })
+    return session
+
+
+def collect_heavy_rotation(session):
+    """Fetch heavy rotation content from Apple Music API."""
+    url = f"{APPLE_MUSIC_API_BASE}/history/heavy-rotation"
+    try:
+        resp = session.get(url, params={"limit": 25}, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        log.warning(f"Heavy rotation fetch failed: {e}")
+        return set()
+
+    artists = set()
+    for item in resp.json().get("data", []):
+        if item.get("type") in ("albums", "library-albums"):
+            name = item.get("attributes", {}).get("artistName", "")
+            if name:
+                artists.add(name.strip().lower())
+    return artists
+
+
+def collect_recommendations(session):
+    """Fetch personal recommendations from Apple Music API."""
+    url = f"{APPLE_MUSIC_API_BASE}/recommendations"
+    try:
+        resp = session.get(url, params={"limit": 25}, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        log.warning(f"Recommendations fetch failed: {e}")
+        return set()
+
+    artists = set()
+    for rec in resp.json().get("data", []):
+        contents = rec.get("relationships", {}).get("contents", {}).get("data", [])
+        for item in contents:
+            if item.get("type") in ("albums", "library-albums"):
+                name = item.get("attributes", {}).get("artistName", "")
+                if name:
+                    artists.add(name.strip().lower())
+    return artists

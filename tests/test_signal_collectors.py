@@ -100,3 +100,75 @@ def test_collect_playlists_jxa_failure():
     with patch("signal_collectors._run_jxa", return_value=("error", 1)):
         with pytest.raises(RuntimeError, match="JXA playlist read failed"):
             collect_user_playlists_jxa()
+
+
+def test_collect_heavy_rotation_extracts_artists():
+    """Should extract artist names from heavy rotation albums."""
+    from signal_collectors import collect_heavy_rotation
+    fake_response = {
+        "data": [
+            {"type": "albums", "attributes": {"artistName": "Haken"}},
+            {"type": "albums", "attributes": {"artistName": "Tool"}},
+            {"type": "playlists", "attributes": {"name": "Chill Vibes"}},
+            {"type": "albums", "attributes": {"artistName": "Haken"}},
+        ]
+    }
+    mock_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = fake_response
+    mock_resp.raise_for_status = MagicMock()
+    mock_session.get.return_value = mock_resp
+
+    result = collect_heavy_rotation(mock_session)
+    assert result == {"haken", "tool"}
+
+
+def test_collect_heavy_rotation_empty():
+    """Should return empty set when no heavy rotation data."""
+    from signal_collectors import collect_heavy_rotation
+    mock_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"data": []}
+    mock_resp.raise_for_status = MagicMock()
+    mock_session.get.return_value = mock_resp
+
+    result = collect_heavy_rotation(mock_session)
+    assert result == set()
+
+
+def test_collect_recommendations_extracts_artists():
+    """Should extract artist names from recommended albums."""
+    from signal_collectors import collect_recommendations
+    fake_response = {
+        "data": [
+            {"relationships": {"contents": {"data": [
+                {"type": "albums", "attributes": {"artistName": "Meshuggah"}},
+                {"type": "albums", "attributes": {"artistName": "Gojira"}},
+            ]}}},
+            {"relationships": {"contents": {"data": [
+                {"type": "playlists", "attributes": {"name": "New Music Mix"}},
+                {"type": "albums", "attributes": {"artistName": "Meshuggah"}},
+            ]}}},
+        ]
+    }
+    mock_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = fake_response
+    mock_resp.raise_for_status = MagicMock()
+    mock_session.get.return_value = mock_resp
+
+    result = collect_recommendations(mock_session)
+    assert result == {"meshuggah", "gojira"}
+
+
+def test_collect_recommendations_empty():
+    """Should return empty set when no recommendations."""
+    from signal_collectors import collect_recommendations
+    mock_session = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"data": []}
+    mock_resp.raise_for_status = MagicMock()
+    mock_session.get.return_value = mock_resp
+
+    result = collect_recommendations(mock_session)
+    assert result == set()
