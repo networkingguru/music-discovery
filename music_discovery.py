@@ -509,11 +509,25 @@ def audit_md_playlist(playlist_artists, library_artists, existing_blocklist,
             f"Over {UNPLAYED_WARN_PCT}% of your Music Discovery playlist is unplayed "
             f"({unplayed}/{total}). Blocklist unheard artists anyway? (y/n): "
         ).strip().lower()
-        if answer != 'y':
+        if answer not in ('y', 'yes'):
             log.info("Skipping playlist audit blocklisting.")
             return set()
 
-    rejected = playlist_artists - set(library_artists) - existing_blocklist
+    log.info(f"Audit inputs: {len(playlist_artists)} playlist artists, "
+             f"{len(library_artists)} library artists, "
+             f"{len(existing_blocklist)} existing blocklist entries.")
+
+    not_in_library = playlist_artists - set(library_artists)
+    log.info(f"Playlist artists NOT in library (candidates for rejection): "
+             f"{len(not_in_library)}")
+    if not_in_library:
+        log.info(f"  {sorted(not_in_library)}")
+
+    already_blocked = not_in_library & existing_blocklist
+    if already_blocked:
+        log.info(f"Already blocklisted (skipping): {sorted(already_blocked)}")
+
+    rejected = not_in_library - existing_blocklist
 
     if rejected:
         log.info(f"Blocklisting {len(rejected)} rejected artist(s) from playlist audit: "
@@ -1465,7 +1479,18 @@ end tell
         if newly_rejected:
             file_blocklist |= newly_rejected
             save_blocklist(file_blocklist, paths["blocklist"])
-            log.info(f"Saved {len(newly_rejected)} rejected artist(s) to blocklist.")
+            log.info(f"Saved {len(newly_rejected)} rejected artist(s) to blocklist "
+                     f"({len(file_blocklist)} total in {paths['blocklist']}).")
+            # Verify persistence
+            verify = load_blocklist(paths["blocklist"])
+            missing = newly_rejected - verify
+            if missing:
+                log.error(f"BLOCKLIST PERSISTENCE BUG: {len(missing)} artist(s) "
+                          f"NOT found after save: {sorted(missing)}")
+            else:
+                log.info("Blocklist persistence verified — all rejections saved.")
+        else:
+            log.info("Audit returned no new rejections.")
 
     already_done = len(cache)
     if already_done:
