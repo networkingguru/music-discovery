@@ -181,6 +181,190 @@ def get_evaluation_artists(phase_d, top_n=10, exclude=None):
     return sorted(artists)
 
 
+def _setup_named_playlist(name):
+    """Create or reset a named playlist. Returns True on success."""
+    from music_discovery import _run_applescript
+    safe_name = name.replace('"', '\\"')
+    count_script = f'''
+tell application "Music"
+    if (exists user playlist "{safe_name}") then
+        return count of tracks of user playlist "{safe_name}"
+    else
+        return -1
+    end if
+end tell
+'''
+    out, code = _run_applescript(count_script)
+    if code != 0:
+        return False
+    try:
+        track_count = int(out)
+    except ValueError:
+        return False
+
+    if track_count == -1:
+        _, code = _run_applescript(f'''
+tell application "Music"
+    make new user playlist with properties {{name:"{safe_name}"}}
+end tell
+''')
+        return code == 0
+
+    if track_count > 0:
+        import time
+        log.info(f"Existing playlist '{name}' has {track_count} tracks — deleting and recreating.")
+        _, code = _run_applescript(f'''
+tell application "Music"
+    delete user playlist "{safe_name}"
+end tell
+''')
+        if code != 0:
+            return False
+        time.sleep(1)
+        _, code = _run_applescript(f'''
+tell application "Music"
+    make new user playlist with properties {{name:"{safe_name}"}}
+end tell
+''')
+        return code == 0
+
+    return True
+
+
+def _add_track_to_named_playlist(artist, track_name, playlist_name):
+    """Search Apple Music for a track and add it to a named playlist.
+    Returns True if added, False if not found."""
+    from music_discovery import (
+        search_itunes, _run_applescript, _run_jxa, _play_store_track,
+        _applescript_escape,
+    )
+    import time
+
+    safe_pl = playlist_name.replace('"', '\\"')
+    safe_artist = _applescript_escape(artist)
+    safe_track = _applescript_escape(track_name)
+
+    store_id = search_itunes(artist, track_name)
+    if not store_id:
+        log.info(f"  Not found: {artist} — {track_name}")
+        return False
+
+    # Snapshot current track
+    snapshot_script = '''
+tell application "Music"
+    try
+        set ct to current track
+        return (name of ct) & "|||" & (artist of ct)
+    on error
+        return ""
+    end try
+end tell
+'''
+    prev_track, _ = _run_applescript(snapshot_script)
+
+    # Play via MediaPlayer
+    _play_store_track(store_id)
+
+    # Poll until current track changes
+    poll_script = '''
+tell application "Music"
+    try
+        set ct to current track
+        return (name of ct) & "|||" & (artist of ct)
+    on error
+        return ""
+    end try
+end tell
+'''
+    for _ in range(10):
+        time.sleep(0.5)
+        out, _ = _run_applescript(poll_script)
+        if out and out != prev_track:
+            break
+    else:
+        return False
+
+    # Get current track info
+    info_script = '''
+tell application "Music"
+    try
+        set ct to current track
+        return (name of ct) & "|||" & (artist of ct)
+    on error
+        return ""
+    end try
+end tell
+'''
+    track_info, _ = _run_applescript(info_script)
+    if not track_info or "|||" not in track_info:
+        return False
+    ct_name, ct_artist = track_info.split("|||", 1)
+    safe_ct_name = _applescript_escape(ct_name)
+    safe_ct_artist = _applescript_escape(ct_artist)
+
+    # Try to find in library and add to playlist
+    lib_script = f'''
+tell application "Music"
+    try
+        set sr to search library playlist 1 for "{safe_ct_name}"
+        repeat with t in sr
+            if artist of t is "{safe_ct_artist}" then
+                duplicate t to user playlist "{safe_pl}"
+                return "ok"
+            end if
+        end repeat
+        return "not_in_library"
+    on error e
+        return "error: " & e
+    end try
+end tell
+'''
+    out, code = _run_applescript(lib_script)
+    if out.startswith("ok"):
+        return True
+
+    # Not in library — add it first
+    add_lib_script = '''
+tell application "Music"
+    try
+        set ct to current track
+        duplicate ct to source "Library"
+        return "lib_ok"
+    on error e
+        return "lib_error: " & e
+    end try
+end tell
+'''
+    lib_out, _ = _run_applescript(add_lib_script)
+    if not lib_out.startswith("lib_ok"):
+        return False
+
+    # Poll until in library, then add to playlist
+    playlist_script = f'''
+tell application "Music"
+    try
+        set sr to search library playlist 1 for "{safe_ct_name}"
+        repeat with t in sr
+            if artist of t is "{safe_ct_artist}" then
+                duplicate t to user playlist "{safe_pl}"
+                return "ok"
+            end if
+        end repeat
+        return "notfound"
+    on error e
+        return "error: " & e
+    end try
+end tell
+'''
+    for attempt in range(6):
+        time.sleep(2 + attempt)
+        out, code = _run_applescript(playlist_script)
+        if out.startswith("ok"):
+            return True
+
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Signal Wargaming Experiment")
     parser.add_argument("--skip-api", action="store_true",
@@ -270,12 +454,13 @@ def main():
         log.info(f"\nBuilding evaluation playlist with {len(eval_artists)} artists...")
 
         from music_discovery import (
-            setup_playlist, search_itunes, add_track_to_playlist,
-            fetch_top_tracks, RATE_LIMIT,
+            search_itunes, fetch_top_tracks, RATE_LIMIT,
+            _run_applescript, _run_jxa, _play_store_track, _applescript_escape,
         )
         import time
 
-        if not setup_playlist():
+        playlist_name = "_TESTING Signal Wargaming"
+        if not _setup_named_playlist(playlist_name):
             log.error("Could not create playlist — aborting.")
             sys.exit(1)
 
@@ -286,16 +471,15 @@ def main():
             tracks = fetch_top_tracks(artist, api_key) if api_key else []
             artist_added = 0
             for track in tracks[:3]:
-                track_id = search_itunes(artist, track["name"])
-                if track_id:
-                    if add_track_to_playlist(artist, track["name"]):
-                        artist_added += 1
-                        added += 1
+                if _add_track_to_named_playlist(artist, track["name"], playlist_name):
+                    artist_added += 1
+                    added += 1
                 if artist_added >= 2:
                     break
             time.sleep(RATE_LIMIT)
 
-        log.info(f"\nEvaluation playlist built: {added} tracks from {len(eval_artists)} artists.")
+        log.info(f"\nEvaluation playlist '{playlist_name}' built: "
+                 f"{added} tracks from {len(eval_artists)} artists.")
         log.info("Listen, favorite what you like, then run:")
         log.info("  python signal_experiment.py --post-listen")
         return
