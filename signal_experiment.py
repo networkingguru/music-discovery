@@ -104,7 +104,7 @@ def collect_all_signals(cache_dir, api_session=None, refresh=False):
     }
 
 
-def score_post_listen(saved_recs, new_fav_artists, top_n=10):
+def score_post_listen(saved_recs, new_fav_artists, top_n=80):
     """Score each recommended config against the user's new favorites."""
     results = []
     for rec in saved_recs:
@@ -450,8 +450,8 @@ def main():
             log.error("No saved recommendations found. Run the experiment first.")
             sys.exit(1)
         saved_recs = json.loads(recs_path.read_text())
-        eval_artists = get_evaluation_artists(saved_recs, top_n=10, exclude=eval_exclude)
-        log.info(f"\nBuilding evaluation playlist with {len(eval_artists)} artists...")
+        eval_artists = get_evaluation_artists(saved_recs, top_n=80, exclude=eval_exclude)
+        log.info(f"\nBuilding evaluation playlist with {len(eval_artists)} artists (1 track each)...")
 
         from music_discovery import (
             search_itunes, fetch_top_tracks, RATE_LIMIT,
@@ -469,12 +469,9 @@ def main():
         for i, artist in enumerate(eval_artists, 1):
             log.info(f"[{i}/{len(eval_artists)}] {artist}")
             tracks = fetch_top_tracks(artist, api_key) if api_key else []
-            artist_added = 0
             for track in tracks[:3]:
                 if _add_track_to_named_playlist(artist, track["name"], playlist_name):
-                    artist_added += 1
                     added += 1
-                if artist_added >= 2:
                     break
             time.sleep(RATE_LIMIT)
 
@@ -503,12 +500,12 @@ def main():
             "name": rec["name"],
             "rationale": rec["rationale"],
             "weights": rec["weights"],
-            "ranked": rec["ranked"][:25],
+            "ranked": rec["ranked"],
             "baseline_diff": rec["baseline_diff"],
         })
     recs_path.write_text(json.dumps(serializable_recs, indent=2))
 
-    eval_artists = get_evaluation_artists(phase_d, top_n=10, exclude=eval_exclude)
+    eval_artists = get_evaluation_artists(phase_d, top_n=80, exclude=eval_exclude)
     log.info(f"\n=== Evaluation Playlist Artists ({len(eval_artists)}) ===")
     for a in eval_artists:
         log.info(f"  {a}")
