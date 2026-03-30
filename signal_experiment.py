@@ -30,6 +30,7 @@ from compare_similarity import generate_apple_music_token, AppleMusicClient
 from signal_collectors import (
     collect_playcounts_jxa, collect_user_playlists_jxa,
     collect_heavy_rotation, collect_recommendations, _make_user_session,
+    collect_ratings_jxa,
 )
 from signal_scoring import score_candidates_multisignal
 from signal_analysis import run_phase_a, run_phase_b, run_phase_c, run_phase_d
@@ -69,6 +70,16 @@ def collect_all_signals(cache_dir, api_session=None, refresh=False):
         pl_cache.write_text(json.dumps(playlists, indent=2))
         log.info(f"  {len(playlists)} artists across user playlists.")
 
+    rat_cache = cache_dir / "ratings_cache.json"
+    if rat_cache.exists() and not refresh:
+        log.info("Loading ratings from cache...")
+        ratings = json.loads(rat_cache.read_text())
+    else:
+        log.info("Reading star ratings from Music.app...")
+        ratings = collect_ratings_jxa()
+        rat_cache.write_text(json.dumps(ratings, indent=2))
+        log.info(f"  {len(ratings)} artists with ratings.")
+
     hr_cache = cache_dir / "heavy_rotation_cache.json"
     if hr_cache.exists() and not refresh:
         log.info("Loading heavy rotation from cache...")
@@ -99,6 +110,7 @@ def collect_all_signals(cache_dir, api_session=None, refresh=False):
         "favorites": favorites,
         "playcount": playcount,
         "playlists": playlists,
+        "ratings": ratings,
         "heavy_rotation": heavy_rotation,
         "recommendations": recommendations,
     }
@@ -118,6 +130,180 @@ def score_post_listen(saved_recs, new_fav_artists, top_n=80):
             "matched": hits,
         })
     return results
+
+
+def build_stratified_artist_list(phase_a, phase_d, target_total=105,
+                                  exclude=None, prior_artists=None):
+    """Build a stratified artist list for the eval playlist.
+
+    Stratum 1: Equal slots per signal from Phase A solo rankings (~75%).
+    Stratum 2: Remaining slots from Phase D blended configs (round-robin).
+
+    Returns list of {"name": str, "stratum": str, "rank": int}
+    """
+    if exclude is None:
+        exclude = set()
+    if prior_artists is None:
+        prior_artists = set()
+    skip = exclude | prior_artists
+    used = set()
+    result = []
+
+    # Stratum 1: signal-fair solo slots
+    signals = list(phase_a.keys())
+    n_signals = len(signals)
+    stratum1_total = int(target_total * 0.75)
+    per_signal = stratum1_total // n_signals
+
+    signal_iters = {}
+    for sig in signals:
+        ranked = phase_a[sig].get("ranked", [])
+        signal_iters[sig] = iter(
+            (rank, name) for rank, (_, name) in enumerate(ranked, 1)
+            if name not in skip
+        )
+
+    signal_counts = {sig: 0 for sig in signals}
+    filled = True
+    while filled:
+        filled = False
+        for sig in signals:
+            if signal_counts[sig] >= per_signal:
+                continue
+            for rank, name in signal_iters[sig]:
+                if name not in used:
+                    result.append({"name": name, "stratum": f"solo:{sig}", "rank": rank})
+                    used.add(name)
+                    signal_counts[sig] += 1
+                    filled = True
+                    break
+
+    # Stratum 2: blended config slots (round-robin)
+    if phase_d and len(result) < target_total:
+        config_iters = []
+        for rec in phase_d:
+            config_iters.append((
+                rec["name"],
+                iter(
+                    (rank, name) for rank, (_, name) in enumerate(rec["ranked"], 1)
+                    if name not in skip
+                ),
+            ))
+        added = True
+        while len(result) < target_total and added:
+            added = False
+            for config_name, it in config_iters:
+                if len(result) >= target_total:
+                    break
+                for rank, name in it:
+                    if name not in used:
+                        result.append({
+                            "name": name,
+                            "stratum": f"blend:{config_name}",
+                            "rank": rank,
+                        })
+                        used.add(name)
+                        added = True
+                        break
+
+    return result
+
+
+def load_manifest(path):
+    """Load eval playlist manifest, or return empty structure."""
+    path = pathlib.Path(path)
+    if path.exists():
+        return json.loads(path.read_text())
+    return {"sessions": []}
+
+
+def get_prior_artists(manifest):
+    """Extract all artist names from prior manifest sessions."""
+    artists = set()
+    for session in manifest.get("sessions", []):
+        for entry in session.get("artists", []):
+            artists.add(entry["name"])
+    return artists
+
+
+def save_manifest_session(path, manifest, artists):
+    """Append a new session to the manifest and write to disk."""
+    import datetime
+    session_id = len(manifest.get("sessions", [])) + 1
+    manifest["sessions"].append({
+        "date": datetime.datetime.now().strftime("%Y-%m-%d"),
+        "session_id": session_id,
+        "artists": artists,
+    })
+    pathlib.Path(path).write_text(json.dumps(manifest, indent=2))
+
+
+def load_post_listen_history(path):
+    """Load post-listen history, or return empty structure."""
+    path = pathlib.Path(path)
+    if path.exists():
+        return json.loads(path.read_text())
+    return {"rounds": [], "cumulative": {}}
+
+
+def accumulate_post_listen_round(history, round_data):
+    """Add a round's results to the cumulative history."""
+    import datetime
+    round_entry = {"date": datetime.datetime.now().strftime("%Y-%m-%d"), **round_data}
+    history["rounds"].append(round_entry)
+    cum = history.get("cumulative", {})
+    cum["total_new_favorites"] = cum.get("total_new_favorites", 0) + len(round_data["new_favorites"])
+    cum_config = cum.get("per_config", {})
+    for config_name, data in round_data.get("per_config_hits", {}).items():
+        if config_name not in cum_config:
+            cum_config[config_name] = {"hits": 0, "pool_size": 0}
+        cum_config[config_name]["hits"] += data["hits"]
+        cum_config[config_name]["pool_size"] += data["pool_size"]
+    cum["per_config"] = cum_config
+    cum_solo = cum.get("per_signal_solo", {})
+    for sig, data in round_data.get("per_signal_solo_hits", {}).items():
+        if sig not in cum_solo:
+            cum_solo[sig] = {"hits": 0, "pool_size": 0}
+        cum_solo[sig]["hits"] += data["hits"]
+        cum_solo[sig]["pool_size"] += data["pool_size"]
+    cum["per_signal_solo"] = cum_solo
+    history["cumulative"] = cum
+    return history
+
+
+def run_statistical_test(cumulative, min_n=30):
+    """Run Fisher's exact test on cumulative config hit rates.
+    Returns None if total_new_favorites < min_n.
+    Returns {"best_config", "p_value", "significant", "all_rates"} otherwise.
+    """
+    if cumulative.get("total_new_favorites", 0) < min_n:
+        return None
+    from scipy.stats import fisher_exact
+    configs = cumulative.get("per_config", {})
+    if len(configs) < 2:
+        return None
+    sorted_configs = sorted(configs.items(),
+                            key=lambda x: x[1]["hits"] / x[1]["pool_size"] if x[1]["pool_size"] > 0 else 0,
+                            reverse=True)
+    best_name = sorted_configs[0][0]
+    best = sorted_configs[0][1]
+    second = sorted_configs[1][1]
+    table = [
+        [best["hits"], best["pool_size"] - best["hits"]],
+        [second["hits"], second["pool_size"] - second["hits"]],
+    ]
+    _, p_value = fisher_exact(table)
+    p_value = float(p_value)
+    return {
+        "best_config": best_name,
+        "p_value": p_value,
+        "significant": bool(p_value < 0.05),
+        "all_rates": {
+            name: {"rate": data["hits"] / data["pool_size"] * 100 if data["pool_size"] > 0 else 0,
+                   "hits": data["hits"], "pool_size": data["pool_size"]}
+            for name, data in configs.items()
+        },
+    }
 
 
 def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
@@ -153,7 +339,7 @@ def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
     report = generate_wargaming_report(phase_a, phase_b, phase_c, phase_d,
                                         library_count=library_count, top_n=top_n)
 
-    return report, phase_d
+    return report, phase_a, phase_d
 
 
 def get_evaluation_artists(phase_d, top_n=10, exclude=None):
@@ -435,13 +621,87 @@ def main():
             sys.exit(1)
         saved_recs = json.loads(recs_path.read_text())
 
+        phase_a_path = cache_dir / "signal_wargaming_phase_a.json"
+        saved_phase_a = json.loads(phase_a_path.read_text()) if phase_a_path.exists() else {}
+
+        manifest_path = cache_dir / "eval_manifest.json"
+        manifest = load_manifest(manifest_path)
+
+        # Get offered artists from latest manifest session
+        offered_artists = set()
+        if manifest.get("sessions"):
+            latest = manifest["sessions"][-1]
+            for entry in latest.get("artists", []):
+                offered_artists.add(entry["name"])
+
+        # Score per-config: which config's ranked list contains each hit
+        per_config_hits = {}
+        for rec in saved_recs:
+            top_names = {name for _, name in rec["ranked"]}
+            hits_in_config = [a for a in new_fav_artists if a in top_names and a in offered_artists]
+            per_config_hits[rec["name"]] = {
+                "hits": len(hits_in_config),
+                "pool_size": len([name for _, name in rec["ranked"] if name in offered_artists]),
+            }
+
+        # Score per-signal solo: which signal's solo list contains each hit
+        per_signal_solo_hits = {}
+        for sig, data in saved_phase_a.items():
+            ranked_names = {name for _, name in data.get("ranked", [])}
+            hits_in_sig = [a for a in new_fav_artists if a in ranked_names and a in offered_artists]
+            per_signal_solo_hits[sig] = {
+                "hits": len(hits_in_sig),
+                "pool_size": len([name for _, name in data.get("ranked", []) if name in offered_artists]),
+            }
+
+        # Build round data and accumulate
+        round_data = {
+            "new_favorites": sorted(new_fav_artists),
+            "per_config_hits": per_config_hits,
+            "per_signal_solo_hits": per_signal_solo_hits,
+        }
+
+        history_path = cache_dir / "post_listen_history.json"
+        history = load_post_listen_history(history_path)
+        history = accumulate_post_listen_round(history, round_data)
+        pathlib.Path(history_path).write_text(json.dumps(history, indent=2))
+
+        # Print current round results
         results = score_post_listen(saved_recs, new_fav_artists)
-        log.info("\n=== Post-Listen Scoring ===\n")
+        log.info("\n=== Post-Listen Scoring (Current Round) ===\n")
         for r in results:
             log.info(f"{r['name']}:")
-            log.info(f"  Hits: {r['hits']}/10 ({r['precision']:.0f}% precision)")
+            log.info(f"  Hits: {r['hits']}/{len(r.get('matched', [])) + (len([n for _, n in next((rec['ranked'] for rec in saved_recs if rec['name'] == r['name']), [])[:80]]) - r['hits'])} ({r['precision']:.0f}% precision)")
             if r["matched"]:
                 log.info(f"  Matched: {', '.join(r['matched'])}")
+
+        # Print cumulative results
+        cum = history.get("cumulative", {})
+        log.info(f"\n=== Cumulative Results ({len(history['rounds'])} rounds) ===")
+        log.info(f"Total new favorites: {cum.get('total_new_favorites', 0)}")
+        if cum.get("per_config"):
+            log.info("\nPer-config hit rates:")
+            for name, data in cum["per_config"].items():
+                rate = data["hits"] / data["pool_size"] * 100 if data["pool_size"] > 0 else 0
+                log.info(f"  {name}: {data['hits']}/{data['pool_size']} ({rate:.1f}%)")
+        if cum.get("per_signal_solo"):
+            log.info("\nPer-signal solo hit rates:")
+            for sig, data in cum["per_signal_solo"].items():
+                rate = data["hits"] / data["pool_size"] * 100 if data["pool_size"] > 0 else 0
+                log.info(f"  {sig}: {data['hits']}/{data['pool_size']} ({rate:.1f}%)")
+
+        # Run statistical test if enough data
+        stat_result = run_statistical_test(cum)
+        if stat_result:
+            log.info(f"\n=== Statistical Test ===")
+            log.info(f"Best config: {stat_result['best_config']}")
+            log.info(f"p-value: {stat_result['p_value']:.4f}")
+            log.info(f"Significant (p < 0.05): {stat_result['significant']}")
+        elif cum.get("total_new_favorites", 0) > 0:
+            log.info(f"\nNeed {30 - cum.get('total_new_favorites', 0)} more favorites for statistical test.")
+
+        # Update favorites snapshot
+        fav_snapshot_path.write_text(json.dumps(new_favorites, indent=2))
         return
 
     if args.build_playlist:
@@ -450,8 +710,21 @@ def main():
             log.error("No saved recommendations found. Run the experiment first.")
             sys.exit(1)
         saved_recs = json.loads(recs_path.read_text())
-        eval_artists = get_evaluation_artists(saved_recs, top_n=80, exclude=eval_exclude)
-        log.info(f"\nBuilding evaluation playlist with {len(eval_artists)} artists (1 track each)...")
+
+        phase_a_path = cache_dir / "signal_wargaming_phase_a.json"
+        if not phase_a_path.exists():
+            log.error("No saved phase_a results found. Run the experiment first.")
+            sys.exit(1)
+        saved_phase_a = json.loads(phase_a_path.read_text())
+
+        manifest_path = cache_dir / "eval_manifest.json"
+        manifest = load_manifest(manifest_path)
+        prior = get_prior_artists(manifest)
+
+        stratified = build_stratified_artist_list(
+            saved_phase_a, saved_recs, target_total=105,
+            exclude=eval_exclude, prior_artists=prior)
+        log.info(f"\nBuilding evaluation playlist with {len(stratified)} artists (1 track each)...")
 
         from music_discovery import (
             search_itunes, fetch_top_tracks, RATE_LIMIT,
@@ -465,23 +738,26 @@ def main():
             sys.exit(1)
 
         api_key = os.environ.get("LASTFM_API_KEY")
-        added = 0
-        for i, artist in enumerate(eval_artists, 1):
-            log.info(f"[{i}/{len(eval_artists)}] {artist}")
+        added_artists = []
+        for i, entry in enumerate(stratified, 1):
+            artist = entry["name"]
+            log.info(f"[{i}/{len(stratified)}] {artist} ({entry['stratum']})")
             tracks = fetch_top_tracks(artist, api_key) if api_key else []
             for track in tracks[:3]:
                 if _add_track_to_named_playlist(artist, track["name"], playlist_name):
-                    added += 1
+                    added_artists.append(entry)
                     break
             time.sleep(RATE_LIMIT)
 
+        save_manifest_session(manifest_path, manifest, added_artists)
+
         log.info(f"\nEvaluation playlist '{playlist_name}' built: "
-                 f"{added} tracks from {len(eval_artists)} artists.")
+                 f"{len(added_artists)} tracks from {len(stratified)} artists.")
         log.info("Listen, favorite what you like, then run:")
         log.info("  python signal_experiment.py --post-listen")
         return
 
-    report, phase_d = run_experiment(
+    report, phase_a, phase_d = run_experiment(
         signals, scrape_cache, apple_cache, rejected_cache,
         user_blocklist, top_n=args.top_n,
         filter_cache=filter_cache, file_blocklist=file_blocklist)
@@ -504,6 +780,12 @@ def main():
             "baseline_diff": rec["baseline_diff"],
         })
     recs_path.write_text(json.dumps(serializable_recs, indent=2))
+
+    phase_a_path = cache_dir / "signal_wargaming_phase_a.json"
+    serializable_a = {}
+    for sig, data in phase_a.items():
+        serializable_a[sig] = {"ranked": data["ranked"]}
+    phase_a_path.write_text(json.dumps(serializable_a, indent=2))
 
     eval_artists = get_evaluation_artists(phase_d, top_n=80, exclude=eval_exclude)
     log.info(f"\n=== Evaluation Playlist Artists ({len(eval_artists)}) ===")
