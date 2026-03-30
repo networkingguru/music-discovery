@@ -140,9 +140,9 @@ SCENARIOS = {
                     "heavy_rotation": 1.0, "recommendations": 1.0},
     },
     "jxa_only": {
-        "desc": "No API user token — only local JXA signals",
+        "desc": "No API user token — only local JXA signals (no ratings)",
         "weights": {"favorites": 1.0, "playcount": 1.0, "playlists": 1.0,
-                    "ratings": 1.0,
+                    "ratings": 0.0,
                     "heavy_rotation": 0.0, "recommendations": 0.0},
     },
     "jxa_full": {
