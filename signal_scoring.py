@@ -87,7 +87,7 @@ def score_candidates_multisignal(cache, signals, weights, *,
     exclude = library_set | user_blocklist
     scores = {}
 
-    # Positive scoring from music-map
+    # Scoring from music-map (positive or negative based on seed weight)
     for lib_artist, similar in cache.items():
         if not isinstance(similar, dict):
             continue
