@@ -102,6 +102,59 @@ def test_collect_playlists_jxa_failure():
             collect_user_playlists_jxa()
 
 
+def test_collect_ratings_averages_centered_by_artist():
+    """Ratings should center on 3-star and average per artist."""
+    from signal_collectors import collect_ratings_jxa
+    fake_output = json.dumps([
+        {"artist": "Haken", "rating": 100},   # 5-star -> +1.0
+        {"artist": "Haken", "rating": 80},    # 4-star -> +0.5
+        {"artist": "Tool", "rating": 40},     # 2-star -> -0.5
+        {"artist": "tool", "rating": 20},     # 1-star -> -1.0
+    ])
+    with patch("signal_collectors._run_jxa", return_value=(fake_output, 0)):
+        result = collect_ratings_jxa()
+    assert "haken" in result
+    assert abs(result["haken"]["avg_centered"] - 0.75) < 0.001
+    assert result["haken"]["count"] == 2
+    assert "tool" in result
+    assert abs(result["tool"]["avg_centered"] - (-0.75)) < 0.001
+    assert result["tool"]["count"] == 2
+
+
+def test_collect_ratings_unrated_treated_as_neutral():
+    """Unrated tracks (rating=0) should count as 3-star (centered=0.0)."""
+    from signal_collectors import collect_ratings_jxa
+    fake_output = json.dumps([
+        {"artist": "Haken", "rating": 100},
+        {"artist": "Haken", "rating": 0},
+    ])
+    with patch("signal_collectors._run_jxa", return_value=(fake_output, 0)):
+        result = collect_ratings_jxa()
+    assert abs(result["haken"]["avg_centered"] - 0.5) < 0.001
+    assert result["haken"]["count"] == 2
+
+
+def test_collect_ratings_skips_empty_artist():
+    """Tracks with empty/missing artist should be skipped."""
+    from signal_collectors import collect_ratings_jxa
+    fake_output = json.dumps([
+        {"artist": "", "rating": 100},
+        {"artist": "Haken", "rating": 80},
+    ])
+    with patch("signal_collectors._run_jxa", return_value=(fake_output, 0)):
+        result = collect_ratings_jxa()
+    assert "" not in result
+    assert "haken" in result
+
+
+def test_collect_ratings_jxa_failure():
+    """Should raise RuntimeError on JXA failure."""
+    from signal_collectors import collect_ratings_jxa
+    with patch("signal_collectors._run_jxa", return_value=("error", 1)):
+        with pytest.raises(RuntimeError, match="JXA ratings read failed"):
+            collect_ratings_jxa()
+
+
 def test_collect_heavy_rotation_extracts_artists():
     """Should extract artist names from heavy rotation albums."""
     from signal_collectors import collect_heavy_rotation
