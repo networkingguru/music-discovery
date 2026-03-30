@@ -671,7 +671,8 @@ def main():
         log.info("\n=== Post-Listen Scoring (Current Round) ===\n")
         for r in results:
             log.info(f"{r['name']}:")
-            log.info(f"  Hits: {r['hits']}/{len(r.get('matched', [])) + (len([n for _, n in next((rec['ranked'] for rec in saved_recs if rec['name'] == r['name']), [])[:80]]) - r['hits'])} ({r['precision']:.0f}% precision)")
+            pool_size = r.get("pool_size", 80)
+            log.info(f"  Hits: {r['hits']}/{pool_size} ({r['precision']:.0f}% precision)")
             if r["matched"]:
                 log.info(f"  Matched: {', '.join(r['matched'])}")
 
