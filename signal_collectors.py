@@ -61,6 +61,63 @@ JSON.stringify(result);
     return {a: c for a, c in counts.items() if c > 0}
 
 
+def collect_ratings_jxa():
+    """Read star ratings for ALL library tracks via JXA.
+
+    Returns {artist_lowercase: {"avg_centered": float, "count": int}}.
+    Centering: (star - 3) / 2 → 5★=+1.0, 4★=+0.5, 3★=0.0, 2★=-0.5, 1★=-1.0.
+    Unrated tracks (rating=0) are treated as neutral (centered=0.0).
+    Raises RuntimeError on JXA failure.
+    """
+    script = '''
+var music = Application("Music");
+var lib = music.libraryPlaylists[0];
+var tracks = lib.tracks;
+var count = tracks.length;
+var result = [];
+if (count > 0) {
+    var artists = tracks.artist();
+    var ratings = tracks.rating();
+    for (var i = 0; i < count; i++) {
+        result.push({artist: artists[i] || "", rating: ratings[i] || 0});
+    }
+}
+JSON.stringify(result);
+'''
+    stdout, code = _run_jxa(script)
+    if code != 0:
+        raise RuntimeError(f"JXA ratings read failed (exit {code}): {stdout}")
+    try:
+        tracks = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise RuntimeError(f"Failed to parse JXA ratings output: {e}")
+
+    artist_data = {}
+    for t in tracks:
+        artist = t.get("artist", "")
+        if not isinstance(artist, str):
+            continue
+        artist = artist.strip().lower()
+        if not artist:
+            continue
+        raw_rating = t.get("rating", 0) or 0
+        if raw_rating == 0:
+            centered = 0.0  # Unrated → neutral
+        else:
+            stars = round(raw_rating / 20)
+            centered = (stars - 3) / 2
+        if artist not in artist_data:
+            artist_data[artist] = {"total": 0.0, "count": 0}
+        artist_data[artist]["total"] += centered
+        artist_data[artist]["count"] += 1
+
+    return {
+        a: {"avg_centered": d["total"] / d["count"], "count": d["count"]}
+        for a, d in artist_data.items()
+        if d["count"] > 0
+    }
+
+
 def collect_user_playlists_jxa():
     """Read all user-created playlists and count artist membership.
 
