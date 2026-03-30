@@ -748,8 +748,8 @@ def main():
             if len(added_artists) >= TARGET_ADDED:
                 break
             artist = entry["name"]
-            remaining = TARGET_ADDED - len(added_artists)
-            log.info(f"[{len(added_artists)+1}/{TARGET_ADDED}] {artist} ({entry['stratum']}) — {remaining} to go")
+            added_so_far = len(added_artists)
+            log.info(f"[{added_so_far}/{TARGET_ADDED} added] {artist} ({entry['stratum']})")
             tracks = fetch_top_tracks(artist, api_key) if api_key else []
             success = False
             for track in tracks[:3]:
