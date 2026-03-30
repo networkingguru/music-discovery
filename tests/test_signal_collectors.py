@@ -147,6 +147,19 @@ def test_collect_ratings_skips_empty_artist():
     assert "haken" in result
 
 
+def test_collect_ratings_computed_rating_treated_as_neutral():
+    """Computed/auto ratings (not multiples of 20) should be neutral."""
+    from signal_collectors import collect_ratings_jxa
+    fake_output = json.dumps([
+        {"artist": "Haken", "rating": 100},   # 5-star -> +1.0
+        {"artist": "Haken", "rating": 1},     # computed -> 0.0
+    ])
+    with patch("signal_collectors._run_jxa", return_value=(fake_output, 0)):
+        result = collect_ratings_jxa()
+    assert abs(result["haken"]["avg_centered"] - 0.5) < 0.001  # (1.0 + 0.0) / 2
+    assert result["haken"]["count"] == 2
+
+
 def test_collect_ratings_jxa_failure():
     """Should raise RuntimeError on JXA failure."""
     from signal_collectors import collect_ratings_jxa
