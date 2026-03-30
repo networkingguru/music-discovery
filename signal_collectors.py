@@ -101,10 +101,10 @@ JSON.stringify(result);
         if not artist:
             continue
         raw_rating = t.get("rating", 0) or 0
-        if raw_rating == 0:
-            centered = 0.0  # Unrated → neutral
+        if raw_rating == 0 or raw_rating % 20 != 0:
+            centered = 0.0  # Unrated or computed rating → neutral
         else:
-            stars = round(raw_rating / 20)
+            stars = raw_rating // 20
             centered = (stars - 3) / 2
         if artist not in artist_data:
             artist_data[artist] = {"total": 0.0, "count": 0}
