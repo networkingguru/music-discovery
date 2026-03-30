@@ -722,10 +722,13 @@ def main():
         manifest = load_manifest(manifest_path)
         prior = get_prior_artists(manifest)
 
+        TARGET_ADDED = 105
+        # Request 3x pool to account for artists not found on Apple Music
         stratified = build_stratified_artist_list(
-            saved_phase_a, saved_recs, target_total=105,
+            saved_phase_a, saved_recs, target_total=TARGET_ADDED * 3,
             exclude=eval_exclude, prior_artists=prior)
-        log.info(f"\nBuilding evaluation playlist with {len(stratified)} artists (1 track each)...")
+        log.info(f"\nBuilding evaluation playlist — target: {TARGET_ADDED} tracks added")
+        log.info(f"Candidate pool: {len(stratified)} artists")
 
         from music_discovery import (
             search_itunes, fetch_top_tracks, RATE_LIMIT,
@@ -740,20 +743,30 @@ def main():
 
         api_key = os.environ.get("LASTFM_API_KEY")
         added_artists = []
+        all_attempted = []
         for i, entry in enumerate(stratified, 1):
+            if len(added_artists) >= TARGET_ADDED:
+                break
             artist = entry["name"]
-            log.info(f"[{i}/{len(stratified)}] {artist} ({entry['stratum']})")
+            remaining = TARGET_ADDED - len(added_artists)
+            log.info(f"[{len(added_artists)+1}/{TARGET_ADDED}] {artist} ({entry['stratum']}) — {remaining} to go")
             tracks = fetch_top_tracks(artist, api_key) if api_key else []
+            success = False
             for track in tracks[:3]:
                 if _add_track_to_named_playlist(artist, track["name"], playlist_name):
+                    entry["added"] = True
                     added_artists.append(entry)
+                    success = True
                     break
+            if not success:
+                entry["added"] = False
+            all_attempted.append(entry)
             time.sleep(RATE_LIMIT)
 
-        save_manifest_session(manifest_path, manifest, added_artists)
+        save_manifest_session(manifest_path, manifest, all_attempted)
 
         log.info(f"\nEvaluation playlist '{playlist_name}' built: "
-                 f"{len(added_artists)} tracks from {len(stratified)} artists.")
+                 f"{len(added_artists)} tracks added ({len(all_attempted)} attempted).")
         log.info("Listen, favorite what you like, then run:")
         log.info("  python signal_experiment.py --post-listen")
         return
