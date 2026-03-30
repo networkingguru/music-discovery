@@ -111,32 +111,44 @@ SCENARIOS = {
     "baseline": {
         "desc": "Current behavior — favorites only",
         "weights": {"favorites": 1.0, "playcount": 0.0, "playlists": 0.0,
+                    "ratings": 0.0,
                     "heavy_rotation": 0.0, "recommendations": 0.0},
     },
     "full_signals": {
         "desc": "All signals active at equal weight",
         "weights": {"favorites": 1.0, "playcount": 1.0, "playlists": 1.0,
+                    "ratings": 1.0,
                     "heavy_rotation": 1.0, "recommendations": 1.0},
     },
     "no_favorites": {
         "desc": "User doesn't favorite — all other signals",
         "weights": {"favorites": 0.0, "playcount": 1.0, "playlists": 1.0,
+                    "ratings": 1.0,
                     "heavy_rotation": 1.0, "recommendations": 1.0},
     },
     "light_listener": {
         "desc": "Favorites but low engagement — capped play count, no playlists/rotation",
         "weights": {"favorites": 1.0, "playcount": 1.0, "playlists": 0.0,
+                    "ratings": 1.0,
                     "heavy_rotation": 0.0, "recommendations": 1.0},
         "caps": {"playcount": 5},
     },
     "api_only": {
         "desc": "No local data — only API signals",
         "weights": {"favorites": 0.0, "playcount": 0.0, "playlists": 0.0,
+                    "ratings": 0.0,
                     "heavy_rotation": 1.0, "recommendations": 1.0},
     },
     "jxa_only": {
         "desc": "No API user token — only local JXA signals",
         "weights": {"favorites": 1.0, "playcount": 1.0, "playlists": 1.0,
+                    "ratings": 1.0,
+                    "heavy_rotation": 0.0, "recommendations": 0.0},
+    },
+    "jxa_full": {
+        "desc": "All local JXA signals including ratings, no API",
+        "weights": {"favorites": 1.0, "playcount": 1.0, "playlists": 1.0,
+                    "ratings": 1.0,
                     "heavy_rotation": 0.0, "recommendations": 0.0},
     },
 }
@@ -168,6 +180,7 @@ def run_phase_c(cache, signals, top_n=TOP_N, **scoring_kwargs):
 def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
     """Phase D: Synthesize 3-5 recommended weight configurations."""
     baseline_weights = {"favorites": 1.0, "playcount": 0.0, "playlists": 0.0,
+                        "ratings": 0.0,
                         "heavy_rotation": 0.0, "recommendations": 0.0}
     baseline_ranked = _run_scoring(cache, signals, baseline_weights, **scoring_kwargs)
     baseline_names = _top_names(baseline_ranked, top_n)
@@ -186,6 +199,7 @@ def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
             "rationale": "Favorites dominate, with play count as secondary confirmation. "
                          "Best for users who actively favorite songs.",
             "weights": {"favorites": 1.0, "playcount": 0.3, "playlists": 0.1,
+                        "ratings": 0.0,
                         "heavy_rotation": 0.1, "recommendations": 0.1},
         },
         {
@@ -193,6 +207,7 @@ def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
             "rationale": "Balances explicit preference (favorites) with engagement depth "
                          "(play count, playlists). Good all-around default.",
             "weights": {"favorites": 1.0, "playcount": 0.5, "playlists": 0.3,
+                        "ratings": 0.0,
                         "heavy_rotation": 0.2, "recommendations": 0.2},
         },
         {
@@ -200,6 +215,7 @@ def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
             "rationale": "Play count and playlists weighted nearly as high as favorites. "
                          "Surfaces artists the user listens to heavily even without favoriting.",
             "weights": {"favorites": 0.8, "playcount": 0.8, "playlists": 0.5,
+                        "ratings": 0.0,
                         "heavy_rotation": 0.3, "recommendations": 0.2},
         },
         {
@@ -207,6 +223,7 @@ def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
             "rationale": "Designed for users who never favorite. Play count is primary, "
                          "supplemented by playlists and Apple signals.",
             "weights": {"favorites": 0.0, "playcount": 1.0, "playlists": 0.5,
+                        "ratings": 0.0,
                         "heavy_rotation": 0.3, "recommendations": 0.3},
         },
         {
@@ -214,7 +231,24 @@ def run_phase_d(cache, signals, top_n=TOP_N, **scoring_kwargs):
             "rationale": "Weights all signals equally to maximize breadth. "
                          "Surfaces the widest variety of candidates across all signals.",
             "weights": {"favorites": 1.0, "playcount": 1.0, "playlists": 1.0,
+                        "ratings": 1.0,
                         "heavy_rotation": 1.0, "recommendations": 1.0},
+        },
+        {
+            "name": "Ratings-Heavy",
+            "rationale": "Star ratings as primary signal, with favorites as secondary. "
+                         "Best for users who consistently rate their music.",
+            "weights": {"favorites": 0.3, "playcount": 0.3, "playlists": 0.1,
+                        "ratings": 1.0,
+                        "heavy_rotation": 0.1, "recommendations": 0.1},
+        },
+        {
+            "name": "Ratings+Favorites Blend",
+            "rationale": "Ratings and favorites weighted equally as co-primary signals. "
+                         "Tests whether they reinforce or duplicate each other.",
+            "weights": {"favorites": 0.8, "playcount": 0.3, "playlists": 0.2,
+                        "ratings": 0.8,
+                        "heavy_rotation": 0.2, "recommendations": 0.2},
         },
     ]
 
