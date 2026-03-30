@@ -20,6 +20,12 @@ def _make_test_data():
         "favorites": {"haken": 5, "tool": 2, "quiet_fan": 10},
         "playcount": {"haken": 100, "tool": 50, "adele": 200},
         "playlists": {"haken": 3, "adele": 5},
+        "ratings": {
+            "haken": {"avg_centered": 0.75, "count": 20},
+            "tool": {"avg_centered": 0.5, "count": 15},
+            "adele": {"avg_centered": -0.25, "count": 50},
+            "quiet_fan": {"avg_centered": 0.6, "count": 5},
+        },
         "heavy_rotation": {"adele", "tool"},
         "recommendations": {"haken", "meshuggah"},
     }
@@ -31,7 +37,7 @@ def test_phase_a_produces_per_signal_results():
     cache, signals = _make_test_data()
     results = run_phase_a(cache, signals, top_n=10)
     assert set(results.keys()) == {"favorites", "playcount", "playlists",
-                                    "heavy_rotation", "recommendations"}
+                                    "ratings", "heavy_rotation", "recommendations"}
     for signal_name, data in results.items():
         assert "ranked" in data
         assert "unique" in data
@@ -63,7 +69,7 @@ def test_phase_b_produces_per_signal_ablation():
     cache, signals = _make_test_data()
     results = run_phase_b(cache, signals, top_n=10)
     assert set(results.keys()) == {"favorites", "playcount", "playlists",
-                                    "heavy_rotation", "recommendations"}
+                                    "ratings", "heavy_rotation", "recommendations"}
     for signal_name, data in results.items():
         assert "dropped" in data
         assert "entered" in data
@@ -73,7 +79,7 @@ def test_phase_b_produces_per_signal_ablation():
 def test_phase_b_dropping_signal_changes_results():
     from signal_analysis import run_phase_b
     cache, signals = _make_test_data()
-    results = run_phase_b(cache, signals, top_n=10)
+    results = run_phase_b(cache, signals, top_n=5)
     any_changes = any(
         len(data["dropped"]) > 0 or len(data["entered"]) > 0
         for data in results.values()
@@ -121,7 +127,7 @@ def test_phase_d_produces_recommendations():
     from signal_analysis import run_phase_d
     cache, signals = _make_test_data()
     recs = run_phase_d(cache, signals, top_n=10)
-    assert 3 <= len(recs) <= 5
+    assert 3 <= len(recs) <= 8
     for rec in recs:
         assert "name" in rec
         assert "rationale" in rec
@@ -145,3 +151,23 @@ def test_phase_d_baseline_diff_contains_entered_and_dropped():
     for rec in recs:
         assert "entered" in rec["baseline_diff"]
         assert "dropped" in rec["baseline_diff"]
+
+
+def test_phase_c_jxa_full_includes_ratings():
+    from signal_analysis import run_phase_c
+    cache, signals = _make_test_data()
+    results = run_phase_c(cache, signals, top_n=10)
+    assert "jxa_full" in results
+    w = results["jxa_full"]["weights"]
+    assert w["ratings"] == 1.0
+    assert w["favorites"] == 1.0
+    assert w["heavy_rotation"] == 0.0
+
+
+def test_phase_d_includes_ratings_configs():
+    from signal_analysis import run_phase_d
+    cache, signals = _make_test_data()
+    recs = run_phase_d(cache, signals, top_n=10)
+    names = [r["name"] for r in recs]
+    assert "Ratings-Heavy" in names
+    assert "Ratings+Favorites Blend" in names
