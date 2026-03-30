@@ -11,6 +11,7 @@ SIGNAL_DISPLAY = {
     "favorites": "Favorites",
     "playcount": "Play Count",
     "playlists": "Playlist Membership",
+    "ratings": "Star Ratings",
     "heavy_rotation": "Heavy Rotation",
     "recommendations": "Personal Recs",
 }
