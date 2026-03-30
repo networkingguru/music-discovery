@@ -12,8 +12,9 @@ import logging
 log = logging.getLogger("signal_scoring")
 
 CONTINUOUS_SIGNALS = ("favorites", "playcount", "playlists")
+RATINGS_SIGNAL = "ratings"
 BINARY_SIGNALS = ("heavy_rotation", "recommendations")
-ALL_SIGNALS = CONTINUOUS_SIGNALS + BINARY_SIGNALS
+ALL_SIGNALS = CONTINUOUS_SIGNALS + (RATINGS_SIGNAL,) + BINARY_SIGNALS
 DEFAULT_WEIGHTS = {s: 0.0 for s in ALL_SIGNALS}
 
 
@@ -40,6 +41,14 @@ def compute_seed_weight(artist, signals, weights, caps=None):
             continue
         raw = signals.get(sig, {}).get(artist, 0)
         total += w * compute_signal_value(raw, cap=caps.get(sig))
+    # Ratings: special continuous signal that allows negative values
+    w = weights.get(RATINGS_SIGNAL, 0.0)
+    if w != 0.0:
+        rating_data = signals.get(RATINGS_SIGNAL, {}).get(artist)
+        if rating_data is not None:
+            avg = rating_data["avg_centered"]
+            count = rating_data["count"]
+            total += w * avg * math.sqrt(math.log(count + 1))
     for sig in BINARY_SIGNALS:
         w = weights.get(sig, 0.0)
         if w == 0.0:
@@ -83,7 +92,7 @@ def score_candidates_multisignal(cache, signals, weights, *,
         if not isinstance(similar, dict):
             continue
         weight = compute_seed_weight(lib_artist, signals, weights, caps=caps)
-        if weight <= 0:
+        if weight == 0:
             continue
         for candidate, proximity in similar.items():
             if candidate not in exclude:
