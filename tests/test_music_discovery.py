@@ -2312,3 +2312,35 @@ def test_check_ai_artist_old_cache_entry_no_bio_tag_fields():
     blocked, reason = md.check_ai_artist("old entry", entry, set(), set())
     assert blocked is True
     assert reason == "blocked_metadata"
+
+def test_ai_detection_end_to_end(monkeypatch):
+    """Full pipeline: AI artist blocked, real artist whitelisted, allowlist override works."""
+    monkeypatch.setattr(md, "ARTIST_BLOCKLIST", set())
+    ai_bl = {"elena veil", "deep watch"}
+    ai_al = {"deep watch"}  # override for Deep Watch
+
+    scored = [
+        (10.0, "elena veil"),      # AI blocklist → blocked
+        (9.0, "deep watch"),       # AI blocklist BUT allowlisted → passes
+        (8.0, "real band"),        # MB Group with releases → whitelisted
+        (7.0, "ai filler"),        # No MB, no bio, no tags, low listeners → blocked
+        (6.0, "obscure real"),     # No MB, but has bio → passes
+        (5.0, "api failure"),      # Empty entry (API failure) → passes
+    ]
+    cache = {
+        "elena veil": {"listeners": 50, "bio_length": 0, "tag_count": 0,
+                        "mb_type": None, "mb_has_releases": False},
+        "deep watch": {"listeners": 50, "bio_length": 0, "tag_count": 0,
+                        "mb_type": None, "mb_has_releases": False},
+        "real band": {"listeners": 5000, "debut_year": 2020, "bio_length": 200,
+                       "tag_count": 3, "mb_type": "Group", "mb_has_releases": True},
+        "ai filler": {"listeners": 10, "debut_year": None, "bio_length": 0,
+                       "tag_count": 0, "mb_type": None, "mb_has_releases": False},
+        "obscure real": {"listeners": 300, "debut_year": None, "bio_length": 150,
+                          "tag_count": 0, "mb_type": None, "mb_has_releases": False},
+        "api failure": {},
+    }
+    result = md.filter_candidates(
+        scored, cache, ai_blocklist=ai_bl, ai_allowlist=ai_al)
+    names = [name for _, name in result]
+    assert names == ["deep watch", "real band", "obscure real", "api failure"]
