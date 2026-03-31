@@ -442,10 +442,19 @@ def test_fetch_filter_data_missing_mbid():
     lastfm_resp = MagicMock()
     lastfm_resp.status_code = 200
     lastfm_resp.json.return_value = {
-        "artist": {"stats": {"listeners": "12000"}, "mbid": ""}
+        "artist": {
+            "stats": {"listeners": "12000"},
+            "mbid": "",
+            "bio": {"content": ""},
+            "tags": {"tag": []},
+        }
     }
-    with patch("requests.get", side_effect=[search_resp, lastfm_resp]):
-        result = md.fetch_filter_data("obscure band", "fake_key")
+    mb_search_resp = MagicMock()
+    mb_search_resp.status_code = 200
+    mb_search_resp.json.return_value = {"artists": []}
+    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp]):
+        with patch("time.sleep"):
+            result = md.fetch_filter_data("obscure band", "fake_key")
     assert result["listeners"] == 12_000
     assert result["debut_year"] is None
 
@@ -538,11 +547,20 @@ def test_fetch_filter_data_falls_back_when_search_empty():
     getinfo_resp = MagicMock()
     getinfo_resp.status_code = 200
     getinfo_resp.json.return_value = {
-        "artist": {"stats": {"listeners": "12000"}, "mbid": ""}
+        "artist": {
+            "stats": {"listeners": "12000"},
+            "mbid": "",
+            "bio": {"content": ""},
+            "tags": {"tag": []},
+        }
     }
+    mb_search_resp = MagicMock()
+    mb_search_resp.status_code = 200
+    mb_search_resp.json.return_value = {"artists": []}
 
-    with patch("requests.get", side_effect=[search_resp, getinfo_resp]):
-        result = md.fetch_filter_data("obscure band", "fake_key")
+    with patch("requests.get", side_effect=[search_resp, getinfo_resp, mb_search_resp]):
+        with patch("time.sleep"):
+            result = md.fetch_filter_data("obscure band", "fake_key")
 
     assert result["listeners"] == 12_000
 
@@ -555,11 +573,20 @@ def test_fetch_filter_data_falls_back_when_search_fails():
     getinfo_resp = MagicMock()
     getinfo_resp.status_code = 200
     getinfo_resp.json.return_value = {
-        "artist": {"stats": {"listeners": "8000"}, "mbid": ""}
+        "artist": {
+            "stats": {"listeners": "8000"},
+            "mbid": "",
+            "bio": {"content": ""},
+            "tags": {"tag": []},
+        }
     }
+    mb_search_resp = MagicMock()
+    mb_search_resp.status_code = 200
+    mb_search_resp.json.return_value = {"artists": []}
 
-    with patch("requests.get", side_effect=[search_resp, getinfo_resp]):
-        result = md.fetch_filter_data("some artist", "fake_key")
+    with patch("requests.get", side_effect=[search_resp, getinfo_resp, mb_search_resp]):
+        with patch("time.sleep"):
+            result = md.fetch_filter_data("some artist", "fake_key")
 
     assert result["listeners"] == 8_000
 
@@ -576,6 +603,167 @@ def test_fetch_filter_data_both_calls_fail():
         result = md.fetch_filter_data("some artist", "fake_key")
 
     assert result == {}
+
+
+def test_fetch_filter_data_extracts_bio_tags_mb_type():
+    """Returns bio_length, tag_count, mb_type, mb_has_releases from API responses."""
+    search_resp = MagicMock()
+    search_resp.status_code = 200
+    search_resp.json.return_value = {
+        "results": {"artistmatches": {"artist": [
+            {"name": "Radiohead", "listeners": "5800000"}
+        ]}}
+    }
+    lastfm_resp = MagicMock()
+    lastfm_resp.status_code = 200
+    lastfm_resp.json.return_value = {
+        "artist": {
+            "stats": {"listeners": "5800000"},
+            "mbid": "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+            "bio": {"content": "Radiohead are an English rock band. " * 5},
+            "tags": {"tag": [{"name": "rock"}, {"name": "alternative"}]},
+        }
+    }
+    mb_resp = MagicMock()
+    mb_resp.status_code = 200
+    mb_resp.json.return_value = {
+        "life-span": {"begin": "1985-01-01"},
+        "type": "Group",
+        "releases": [{"title": "OK Computer"}],
+        "relations": [],
+    }
+    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_resp]):
+        result = md.fetch_filter_data("radiohead", "fake_key")
+    assert result["bio_length"] > 50
+    assert result["tag_count"] == 2
+    assert result["mb_type"] == "Group"
+    assert result["mb_has_releases"] is True
+
+
+def test_fetch_filter_data_no_mbid_falls_back_to_mb_search():
+    """When Last.fm returns no MBID, falls back to MusicBrainz name search + MBID detail."""
+    search_resp = MagicMock()
+    search_resp.status_code = 200
+    search_resp.json.return_value = {
+        "results": {"artistmatches": {"artist": [{"name": "Fake Band"}]}}
+    }
+    lastfm_resp = MagicMock()
+    lastfm_resp.status_code = 200
+    lastfm_resp.json.return_value = {
+        "artist": {
+            "stats": {"listeners": "500"},
+            "mbid": "",
+            "bio": {"content": ""},
+            "tags": {"tag": []},
+        }
+    }
+    # MusicBrainz search returns a match (no releases in search response)
+    mb_search_resp = MagicMock()
+    mb_search_resp.status_code = 200
+    mb_search_resp.json.return_value = {
+        "artists": [{
+            "name": "Fake Band",
+            "id": "abc-123",
+            "score": 100,
+            "type": "Group",
+        }]
+    }
+    # Follow-up MBID detail lookup (has releases)
+    mb_detail_resp = MagicMock()
+    mb_detail_resp.status_code = 200
+    mb_detail_resp.json.return_value = {
+        "releases": [{"title": "Album"}],
+        "life-span": {"begin": "2015"},
+    }
+    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp, mb_detail_resp]):
+        with patch("time.sleep"):  # skip rate-limit sleeps in test
+            result = md.fetch_filter_data("fake band", "fake_key")
+    assert result["mb_type"] == "Group"
+    assert result["mb_has_releases"] is True
+    assert result["debut_year"] == 2015
+
+
+def test_fetch_filter_data_mb_search_rejects_low_score():
+    """MusicBrainz search results with score < 80 are treated as not found."""
+    search_resp = MagicMock()
+    search_resp.status_code = 200
+    search_resp.json.return_value = {
+        "results": {"artistmatches": {"artist": [{"name": "AI Bot"}]}}
+    }
+    lastfm_resp = MagicMock()
+    lastfm_resp.status_code = 200
+    lastfm_resp.json.return_value = {
+        "artist": {
+            "stats": {"listeners": "10"},
+            "mbid": "",
+            "bio": {"content": ""},
+            "tags": {"tag": []},
+        }
+    }
+    mb_search_resp = MagicMock()
+    mb_search_resp.status_code = 200
+    mb_search_resp.json.return_value = {
+        "artists": [{"name": "AI Bot X", "score": 50, "type": "Person"}]
+    }
+    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp]):
+        with patch("time.sleep"):
+            result = md.fetch_filter_data("ai bot", "fake_key")
+    assert result.get("mb_type") is None
+    assert result.get("mb_has_releases") is False
+
+
+def test_fetch_filter_data_mb_search_rejects_name_mismatch():
+    """MusicBrainz search result with wrong name is treated as not found."""
+    search_resp = MagicMock()
+    search_resp.status_code = 200
+    search_resp.json.return_value = {
+        "results": {"artistmatches": {"artist": [{"name": "Elena Veil"}]}}
+    }
+    lastfm_resp = MagicMock()
+    lastfm_resp.status_code = 200
+    lastfm_resp.json.return_value = {
+        "artist": {
+            "stats": {"listeners": "50"},
+            "mbid": "",
+            "bio": {"content": ""},
+            "tags": {"tag": []},
+        }
+    }
+    mb_search_resp = MagicMock()
+    mb_search_resp.status_code = 200
+    mb_search_resp.json.return_value = {
+        "artists": [{"name": "Elena", "score": 90, "type": "Person"}]
+    }
+    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp]):
+        with patch("time.sleep"):
+            result = md.fetch_filter_data("elena veil", "fake_key")
+    assert result.get("mb_type") is None
+
+
+def test_fetch_filter_data_bio_strips_lastfm_boilerplate():
+    """Bio length excludes the standard Last.fm 'Read more' suffix and HTML."""
+    search_resp = MagicMock()
+    search_resp.status_code = 200
+    search_resp.json.return_value = {
+        "results": {"artistmatches": {"artist": [{"name": "Test"}]}}
+    }
+    lastfm_resp = MagicMock()
+    lastfm_resp.status_code = 200
+    lastfm_resp.json.return_value = {
+        "artist": {
+            "stats": {"listeners": "100"},
+            "mbid": "",
+            "bio": {"content": '<a href="https://www.last.fm/music/Test">Read more on Last.fm</a>'},
+            "tags": {"tag": []},
+        }
+    }
+    mb_search_resp = MagicMock()
+    mb_search_resp.status_code = 200
+    mb_search_resp.json.return_value = {"artists": []}
+    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp]):
+        result = md.fetch_filter_data("test", "fake_key")
+    assert result["bio_length"] == 0
+
 
 def test_filter_candidates_removes_popular_classic():
     """Artist with >2M listeners and debut <= 2006 is excluded."""

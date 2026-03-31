@@ -68,6 +68,7 @@ SKIP_HREFS = {"", "/", "/about", "/contact", "/gnod"}
 
 LASTFM_API_URL      = "http://ws.audioscrobbler.com/2.0/"
 MUSICBRAINZ_API_URL = "https://musicbrainz.org/ws/2/artist/{}"
+MUSICBRAINZ_SEARCH_URL = "https://musicbrainz.org/ws/2/artist/"
 POPULAR_THRESHOLD   = 50_000
 CLASSIC_YEAR        = 2006
 TRACKS_PER_ARTIST   = 2
@@ -697,11 +698,23 @@ def stale_cache_keys(cache):
     These entries need to be re-scraped to produce proximity-score dicts."""
     return [k for k, v in cache.items() if isinstance(v, list)]
 
+def _clean_bio_length(bio_content):
+    """Return length of bio content after stripping HTML and Last.fm boilerplate."""
+    if not bio_content:
+        return 0
+    # Strip HTML tags
+    text = re.sub(r"<[^>]+>", "", bio_content)
+    # Strip Last.fm boilerplate suffix
+    text = re.sub(r"\s*Read more on Last\.fm\.?\s*$", "", text, flags=re.IGNORECASE)
+    return len(text.strip())
+
 def fetch_filter_data(artist, api_key):
-    """Fetch Last.fm listener count and MusicBrainz debut year for an artist.
+    """Fetch Last.fm listener count, bio/tags, and MusicBrainz debut year/type for an artist.
     Uses artist.search first to resolve the canonical name, then artist.getInfo
-    for the MBID, then MusicBrainz for the debut year.
-    Returns {"listeners": int, "debut_year": int|None}, or {} on any failure.
+    for the MBID/bio/tags, then MusicBrainz for debut year and type.
+    Returns {"listeners": int, "debut_year": int|None, "bio_length": int,
+             "tag_count": int, "mb_type": str|None, "mb_has_releases": bool},
+    or {} on any failure.
     Never raises — network errors and missing data return {} or None gracefully."""
     try:
         # Step 1: resolve canonical name via search
@@ -721,7 +734,7 @@ def fetch_filter_data(artist, api_key):
             if matches:
                 canonical = matches[0].get("name", artist)
 
-        # Step 2: get listener count and MBID via getInfo
+        # Step 2: get listener count, MBID, bio, and tags via getInfo
         resp = requests.get(LASTFM_API_URL, timeout=10, params={
             "method":  "artist.getInfo",
             "artist":  canonical,
@@ -733,22 +746,72 @@ def fetch_filter_data(artist, api_key):
         data      = resp.json().get("artist", {})
         listeners = int(data.get("stats", {}).get("listeners", 0))
         mbid      = (data.get("mbid") or "").strip()
+        bio_content = data.get("bio", {}).get("content", "")
+        bio_length  = _clean_bio_length(bio_content)
+        tag_count   = len(data.get("tags", {}).get("tag", []))
 
-        # Step 3: get debut year from MusicBrainz
+        # Step 3: get debut year and type from MusicBrainz
         debut_year = None
+        mb_type = None
+        mb_has_releases = False
+
         if mbid:
+            # Direct MBID lookup (existing path)
             mb_resp = requests.get(
                 MUSICBRAINZ_API_URL.format(mbid),
                 timeout=10,
                 headers={"User-Agent": MB_USER_AGENT},
-                params={"fmt": "json"},
+                params={"fmt": "json", "inc": "releases"},
             )
             if mb_resp.status_code == 200:
-                begin = (mb_resp.json().get("life-span", {}).get("begin") or "").strip()
+                mb_data = mb_resp.json()
+                begin = (mb_data.get("life-span", {}).get("begin") or "").strip()
                 if begin:
                     debut_year = int(begin[:4])
+                mb_type = mb_data.get("type")
+                mb_has_releases = len(mb_data.get("releases", [])) > 0
+        else:
+            # Fallback: MusicBrainz name search
+            time.sleep(1.1)  # MusicBrainz rate limit
+            mb_search_resp = requests.get(
+                MUSICBRAINZ_SEARCH_URL,
+                timeout=10,
+                headers={"User-Agent": MB_USER_AGENT},
+                params={"query": f'artist:"{artist}"', "fmt": "json", "limit": 1},
+            )
+            if mb_search_resp.status_code == 200:
+                artists = mb_search_resp.json().get("artists", [])
+                if artists:
+                    top = artists[0]
+                    score = top.get("score", 0)
+                    mb_name = top.get("name", "")
+                    if score >= 80 and mb_name.strip().lower() == artist.strip().lower():
+                        mb_type = top.get("type")
+                        # Search API doesn't return releases — do MBID lookup
+                        found_id = top.get("id", "")
+                        if found_id:
+                            time.sleep(1.1)  # MusicBrainz rate limit
+                            mb_detail = requests.get(
+                                MUSICBRAINZ_API_URL.format(found_id),
+                                timeout=10,
+                                headers={"User-Agent": MB_USER_AGENT},
+                                params={"fmt": "json", "inc": "releases"},
+                            )
+                            if mb_detail.status_code == 200:
+                                detail = mb_detail.json()
+                                mb_has_releases = len(detail.get("releases", [])) > 0
+                                begin = (detail.get("life-span", {}).get("begin") or "").strip()
+                                if begin:
+                                    debut_year = int(begin[:4])
 
-        return {"listeners": listeners, "debut_year": debut_year}
+        return {
+            "listeners": listeners,
+            "debut_year": debut_year,
+            "bio_length": bio_length,
+            "tag_count": tag_count,
+            "mb_type": mb_type,
+            "mb_has_releases": mb_has_releases,
+        }
     except Exception as e:
         log.debug(f"fetch_filter_data failed for '{artist}': {e}")
         return {}
