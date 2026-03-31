@@ -810,10 +810,33 @@ def test_search_itunes_returns_track_id(monkeypatch):
     """Returns store track ID string on success."""
     mock_resp = type("R", (), {
         "status_code": 200,
-        "json": lambda self: {"resultCount": 1, "results": [{"trackId": 12345}]},
+        "json": lambda self: {"resultCount": 1, "results": [{"trackId": 12345, "kind": "song"}]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
     assert md.search_itunes("Radiohead", "Creep") == "12345"
+
+def test_search_itunes_filters_music_videos(monkeypatch):
+    """Skips music videos and returns only songs."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"resultCount": 2, "results": [
+            {"trackId": 111, "kind": "music-video", "artistName": "Radiohead"},
+            {"trackId": 222, "kind": "song", "artistName": "Radiohead"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    assert md.search_itunes("Radiohead", "Creep") == "222"
+
+def test_search_itunes_returns_none_when_only_videos(monkeypatch):
+    """Returns None when all results are music videos."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"resultCount": 1, "results": [
+            {"trackId": 111, "kind": "music-video", "artistName": "Radiohead"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    assert md.search_itunes("Radiohead", "Creep") is None
 
 def test_search_itunes_returns_none_on_no_results(monkeypatch):
     """Returns None when no tracks found."""
@@ -1319,6 +1342,33 @@ def test_load_user_blocklist_reads_names(tmp_path):
 def test_load_user_blocklist_missing_file(tmp_path):
     """Returns empty set when file does not exist."""
     result = md.load_user_blocklist(tmp_path / "nope.txt")
+    assert result == set()
+
+
+# ── load_ai_blocklist / load_ai_allowlist ─────────────────
+
+def test_load_ai_blocklist_reads_names(tmp_path):
+    """Reads artist names, lowercased, ignoring comments and blanks."""
+    f = tmp_path / "ai_blocklist.txt"
+    f.write_text("# comment\nElena Veil\n\nDeep Watch\n")
+    result = md.load_ai_blocklist(f)
+    assert result == {"elena veil", "deep watch"}
+
+def test_load_ai_blocklist_missing_file(tmp_path):
+    """Returns empty set if file does not exist."""
+    result = md.load_ai_blocklist(tmp_path / "nope.txt")
+    assert result == set()
+
+def test_load_ai_allowlist_reads_names(tmp_path):
+    """Reads artist names, lowercased, ignoring comments and blanks."""
+    f = tmp_path / "ai_allowlist.txt"
+    f.write_text("# override\nMayhem\n")
+    result = md.load_ai_allowlist(f)
+    assert result == {"mayhem"}
+
+def test_load_ai_allowlist_missing_file(tmp_path):
+    """Returns empty set if file does not exist."""
+    result = md.load_ai_allowlist(tmp_path / "nope.txt")
     assert result == set()
 
 
