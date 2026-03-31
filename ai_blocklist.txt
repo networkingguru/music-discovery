@@ -5,7 +5,12 @@
 #
 # COLLISION AUDIT: Names removed due to real-artist collisions:
 #   Mayhem, Aven, Nora Van Elken, DV8, David Allen, Owen James,
-#   Shea, Hermann, Fellows, Callous
+#   Shea, Hermann, Fellows, Callous,
+#   Christopher Colman (Person, 1 release), Clay Edwards (Person, 1 release),
+#   Lo Mimieux (Person, 1 release), Adelmar Borrego (Person, 1 release),
+#   The Devil Inside (Group, 1 release), The Smoothies (Group, 2 releases),
+#   Calming River (Person, 3 releases, musician from Malvern),
+#   Ghostwriter (Person, 9 releases, Steve Schecter, releases from 2003)
 
 # ── MBW "Original 50" (Quiz & Larossi pseudonyms, 2017) ──
 Aaron Lansing
@@ -21,8 +26,6 @@ Bon Vie
 Caro Utobarto
 Charles Bolt
 Charlie Key
-Christopher Colman
-Clay Edwards
 Deep Watch
 Dylan Francis
 Enno Aare
@@ -39,7 +42,6 @@ Jonathan Coffey
 Jozef Gatysik
 Karin Borg
 Leon Noel
-Lo Mimieux
 Martin Fox
 Mbo Mentho
 Mia Strass
@@ -58,7 +60,6 @@ Tony Lieberman
 Wilma Harrods
 
 # ── Johan Rohr / Firefly / Chillmi pseudonyms (2022-2024) ──
-Adelmar Borrego
 Csizmazia Etel
 Maya Astrom
 Minik Knudsen
@@ -130,8 +131,6 @@ Funkorama
 Hyperdrive Sound
 Stellar Cruise
 Terry "Goldmind" Watkins
-The Devil Inside
-The Smoothies
 The Velvet Sundown
 Velvet Funk
 What Is?
@@ -160,7 +159,6 @@ Zygotic Washstands
 
 # ── Wargame-confirmed AI filler ──
 Adriana Soulful
-Calming River
 Deep Ambient Moods
 Elena Veil
 Jade Amara
@@ -173,7 +171,6 @@ White Noise Baby Sleep
 # ── Known virtual/AI artists ──
 FN Meka
 Miquela
-Ghostwriter
 Sleepy John
 
 # ── Sony Music / Yellowstone mood music ──
