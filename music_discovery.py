@@ -1633,6 +1633,10 @@ def main():
     file_blocklist = load_blocklist(paths["blocklist"])
     user_blocklist_path = pathlib.Path(__file__).parent / "blocklist.txt"
     user_blocklist = load_user_blocklist(user_blocklist_path)
+    ai_blocklist = load_ai_blocklist(
+        pathlib.Path(__file__).parent / "ai_blocklist.txt")
+    ai_allowlist = load_ai_allowlist(
+        pathlib.Path(__file__).parent / "ai_allowlist.txt")
     rejected_artists = file_blocklist - user_blocklist  # taste rejections from playlist audit
     file_blocklist |= user_blocklist
 
@@ -1791,7 +1795,9 @@ end tell
 
     # ── 7. Filter and output ───────────────────────────────
     log.info("\nFiltering and writing results...")
-    ranked = filter_candidates(scored, filter_cache, file_blocklist | md_exclusion)
+    ranked = filter_candidates(scored, filter_cache, file_blocklist | md_exclusion,
+                               ai_blocklist=ai_blocklist, ai_allowlist=ai_allowlist)
+    save_cache(filter_cache, paths["filter_cache"])
     write_output(ranked, len(library_artists), paths["output"])
 
     # ── 8. Build playlist (optional) ───────────────────────
