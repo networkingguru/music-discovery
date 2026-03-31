@@ -686,6 +686,96 @@ def load_ai_allowlist(path):
     Returns a set of lowercase artist names."""
     return load_user_blocklist(path)
 
+# Whitelist MB types that indicate a real artist
+_MB_WHITELIST_TYPES = {"Person", "Group", "Orchestra", "Choir"}
+_AI_CACHE_TTL_DAYS = 90
+
+def check_ai_artist(name, filter_entry, ai_blocklist, ai_allowlist):
+    """Three-layer AI artist detection.
+
+    Evaluation order (short-circuits):
+      1. Allowlist → pass
+      2. Static blocklist → block
+      3. Cache → return cached result (if fresh)
+      4. MusicBrainz type (Person/Group/Orchestra/Choir with releases) → whitelist
+      5. Last.fm heuristic (no bio + no tags + <1000 listeners) → block
+      6. API failure (empty entry) → pass (benefit of doubt)
+      7. Default → pass
+
+    Args:
+        name: lowercase artist name
+        filter_entry: dict from filter_cache (may be empty on API failure)
+        ai_blocklist: set of lowercase names from ai_blocklist.txt
+        ai_allowlist: set of lowercase names from ai_allowlist.txt
+
+    Returns:
+        (blocked: bool, reason: str)
+    Side effect:
+        Updates filter_entry with ai_check and ai_check_date fields.
+    """
+    name = name.strip().lower()
+
+    # Step 1: Allowlist
+    if name in ai_allowlist:
+        return False, "allowlist"
+
+    # Step 2: Static blocklist (always checked, overrides cache)
+    if name in ai_blocklist:
+        return True, "blocked_static"
+
+    # Step 3: Cache
+    cached = filter_entry.get("ai_check")
+    if cached:
+        if cached == "blocked_metadata":
+            # Check TTL
+            check_date = filter_entry.get("ai_check_date", "")
+            if check_date:
+                try:
+                    age = (datetime.date.today()
+                           - datetime.date.fromisoformat(check_date))
+                    if age.days < _AI_CACHE_TTL_DAYS:
+                        return True, "blocked_metadata"
+                except ValueError:
+                    pass
+                # Expired — fall through to re-evaluate
+            else:
+                # No date — fall through to re-evaluate
+                pass
+        else:
+            # pass or whitelisted_mb — return as-is
+            return (False, cached)
+
+    # Step 4: MusicBrainz type whitelist
+    # Empty entry means API failure — skip to step 6
+    if not filter_entry:
+        return False, "pass"
+
+    mb_type = filter_entry.get("mb_type")
+    mb_has_releases = filter_entry.get("mb_has_releases", False)
+    if mb_type in _MB_WHITELIST_TYPES and mb_has_releases:
+        filter_entry["ai_check"] = "whitelisted_mb"
+        filter_entry["ai_check_date"] = datetime.date.today().isoformat()
+        return False, "whitelisted_mb"
+
+    # Step 5: Last.fm metadata heuristic
+    listeners = filter_entry.get("listeners")
+    if listeners is None:
+        # No listener data despite non-empty entry — inconclusive, pass
+        return False, "pass"
+
+    bio_length = filter_entry.get("bio_length", 0)
+    tag_count = filter_entry.get("tag_count", 0)
+
+    if listeners < 1000 and bio_length < 50 and tag_count == 0:
+        filter_entry["ai_check"] = "blocked_metadata"
+        filter_entry["ai_check_date"] = datetime.date.today().isoformat()
+        return True, "blocked_metadata"
+
+    # Step 7: Default pass
+    filter_entry["ai_check"] = "pass"
+    filter_entry["ai_check_date"] = datetime.date.today().isoformat()
+    return False, "pass"
+
 def detect_blocklist_candidates(scored, filter_cache):
     """Return names that are almost certainly non-artists, to auto-add to the blocklist.
     Only flags entries still {} in filter_cache after the re-fetch pass — meaning

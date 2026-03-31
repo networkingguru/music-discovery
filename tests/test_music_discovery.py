@@ -2065,3 +2065,197 @@ def test_build_playlist_xml_only_skips_setup(monkeypatch, tmp_path):
     success, tracks = md.build_playlist(ranked, "fake-key", paths, xml_only=True)
     assert success is True
     assert len(tracks) >= 1
+
+
+# ── check_ai_artist ───────────────────────────────────────
+
+import datetime  # needed for TTL boundary tests
+
+AI_BL = {"elena veil", "deep watch"}
+AI_AL = {"mayhem"}
+
+def test_check_ai_artist_allowlist_overrides():
+    """Artist in allowlist always passes, even if in blocklist."""
+    blocked, reason = md.check_ai_artist("mayhem", {}, {"mayhem"}, {"mayhem"})
+    assert blocked is False
+    assert reason == "allowlist"
+
+def test_check_ai_artist_static_blocklist():
+    """Artist in static blocklist is blocked."""
+    blocked, reason = md.check_ai_artist("elena veil", {}, AI_BL, set())
+    assert blocked is True
+    assert reason == "blocked_static"
+
+def test_check_ai_artist_static_blocklist_overrides_cache():
+    """Static blocklist blocks even if cache says pass."""
+    entry = {"ai_check": "pass", "ai_check_date": "2026-01-01"}
+    blocked, reason = md.check_ai_artist("elena veil", entry, AI_BL, set())
+    assert blocked is True
+    assert reason == "blocked_static"
+
+def test_check_ai_artist_cache_hit_pass():
+    """Cached pass is returned without further checks."""
+    entry = {"ai_check": "pass", "ai_check_date": datetime.date.today().isoformat()}
+    blocked, reason = md.check_ai_artist("some artist", entry, AI_BL, set())
+    assert blocked is False
+    assert reason == "pass"
+
+def test_check_ai_artist_cache_hit_whitelisted():
+    """Cached whitelisted_mb is returned."""
+    entry = {"ai_check": "whitelisted_mb", "ai_check_date": datetime.date.today().isoformat()}
+    blocked, reason = md.check_ai_artist("real band", entry, AI_BL, set())
+    assert blocked is False
+    assert reason == "whitelisted_mb"
+
+def test_check_ai_artist_cache_blocked_metadata_expired():
+    """Expired blocked_metadata (>90 days) is re-evaluated."""
+    expired_date = (datetime.date.today() - datetime.timedelta(days=91)).isoformat()
+    entry = {
+        "ai_check": "blocked_metadata", "ai_check_date": expired_date,
+        "listeners": 500, "bio_length": 0, "tag_count": 0,
+        "mb_type": None, "mb_has_releases": False,
+    }
+    blocked, reason = md.check_ai_artist("old block", entry, set(), set())
+    # Re-evaluated: still meets block criteria
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_cache_blocked_metadata_fresh():
+    """Fresh blocked_metadata (<90 days) is returned from cache."""
+    fresh_date = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+    entry = {
+        "ai_check": "blocked_metadata", "ai_check_date": fresh_date,
+    }
+    blocked, reason = md.check_ai_artist("recent block", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_cache_blocked_metadata_boundary_day89():
+    """blocked_metadata at exactly 89 days is still fresh (< 90)."""
+    day89 = (datetime.date.today() - datetime.timedelta(days=89)).isoformat()
+    entry = {"ai_check": "blocked_metadata", "ai_check_date": day89}
+    blocked, reason = md.check_ai_artist("boundary", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_cache_blocked_metadata_boundary_day90():
+    """blocked_metadata at exactly 90 days expires and re-evaluates."""
+    day90 = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+    entry = {
+        "ai_check": "blocked_metadata", "ai_check_date": day90,
+        "listeners": 5000, "bio_length": 200, "tag_count": 3,
+        "mb_type": None, "mb_has_releases": False,
+    }
+    blocked, reason = md.check_ai_artist("boundary90", entry, set(), set())
+    # Re-evaluated: now has good metadata → passes
+    assert blocked is False
+    assert reason == "pass"
+
+def test_check_ai_artist_mb_group_with_releases_whitelists():
+    """MusicBrainz Group with releases → whitelisted."""
+    entry = {"mb_type": "Group", "mb_has_releases": True,
+             "listeners": 50, "bio_length": 0, "tag_count": 0}
+    blocked, reason = md.check_ai_artist("real band", entry, set(), set())
+    assert blocked is False
+    assert reason == "whitelisted_mb"
+    assert entry["ai_check"] == "whitelisted_mb"
+
+def test_check_ai_artist_mb_person_with_releases_whitelists():
+    """MusicBrainz Person with releases → whitelisted."""
+    entry = {"mb_type": "Person", "mb_has_releases": True,
+             "listeners": 50, "bio_length": 0, "tag_count": 0}
+    blocked, reason = md.check_ai_artist("solo artist", entry, set(), set())
+    assert blocked is False
+    assert reason == "whitelisted_mb"
+
+def test_check_ai_artist_mb_type_without_releases_not_whitelisted():
+    """MusicBrainz entry without releases does not whitelist."""
+    entry = {"mb_type": "Group", "mb_has_releases": False,
+             "listeners": 50, "bio_length": 0, "tag_count": 0}
+    blocked, reason = md.check_ai_artist("empty mb", entry, set(), set())
+    # Falls through to L3 heuristic: listeners < 1000, no bio, no tags → block
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_metadata_heuristic_blocks():
+    """No MB, low listeners, no bio, no tags → blocked."""
+    entry = {"listeners": 50, "bio_length": 0, "tag_count": 0,
+             "mb_type": None, "mb_has_releases": False}
+    blocked, reason = md.check_ai_artist("ai filler", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_metadata_heuristic_passes_with_bio():
+    """Has bio → passes even with low listeners and no tags."""
+    entry = {"listeners": 50, "bio_length": 200, "tag_count": 0,
+             "mb_type": None, "mb_has_releases": False}
+    blocked, reason = md.check_ai_artist("real obscure", entry, set(), set())
+    assert blocked is False
+    assert reason == "pass"
+
+def test_check_ai_artist_metadata_heuristic_passes_with_listeners():
+    """Listeners >= 1000 → passes even with no bio and no tags."""
+    entry = {"listeners": 5000, "bio_length": 0, "tag_count": 0,
+             "mb_type": None, "mb_has_releases": False}
+    blocked, reason = md.check_ai_artist("popular enough", entry, set(), set())
+    assert blocked is False
+    assert reason == "pass"
+
+def test_check_ai_artist_empty_entry_passes():
+    """Empty filter entry (API failure) → pass (benefit of doubt)."""
+    blocked, reason = md.check_ai_artist("unknown", {}, set(), set())
+    assert blocked is False
+    assert reason == "pass"
+
+def test_check_ai_artist_case_insensitive():
+    """Mixed-case name is lowercased before checking blocklist."""
+    blocked, reason = md.check_ai_artist("Elena Veil", {}, {"elena veil"}, set())
+    assert blocked is True
+    assert reason == "blocked_static"
+
+def test_check_ai_artist_malformed_date():
+    """Malformed ai_check_date triggers re-evaluation, not crash."""
+    entry = {
+        "ai_check": "blocked_metadata", "ai_check_date": "not-a-date",
+        "listeners": 500, "bio_length": 0, "tag_count": 0,
+        "mb_type": None, "mb_has_releases": False,
+    }
+    blocked, reason = md.check_ai_artist("bad date", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_static_blocklist_does_not_cache():
+    """Static blocklist hit does not write ai_check to cache entry."""
+    entry = {"listeners": 5000}
+    blocked, reason = md.check_ai_artist("elena veil", entry, {"elena veil"}, set())
+    assert blocked is True
+    assert "ai_check" not in entry
+
+def test_check_ai_artist_allowlist_overrides_metadata_heuristic():
+    """Allowlisted artist passes even if metadata would block them."""
+    entry = {"listeners": 10, "bio_length": 0, "tag_count": 0,
+             "mb_type": None, "mb_has_releases": False}
+    blocked, reason = md.check_ai_artist("my fave", entry, set(), {"my fave"})
+    assert blocked is False
+
+def test_check_ai_artist_mb_orchestra_whitelists():
+    """MusicBrainz Orchestra with releases → whitelisted."""
+    entry = {"mb_type": "Orchestra", "mb_has_releases": True,
+             "listeners": 50, "bio_length": 0, "tag_count": 0}
+    blocked, reason = md.check_ai_artist("philharmonic", entry, set(), set())
+    assert blocked is False
+    assert reason == "whitelisted_mb"
+
+def test_check_ai_artist_writes_ai_check_date():
+    """ai_check_date is written alongside ai_check for cache entries."""
+    entry = {"mb_type": "Group", "mb_has_releases": True,
+             "listeners": 50, "bio_length": 0, "tag_count": 0}
+    md.check_ai_artist("real band", entry, set(), set())
+    assert entry["ai_check_date"] == datetime.date.today().isoformat()
+
+def test_check_ai_artist_old_cache_entry_no_bio_tag_fields():
+    """Pre-AI cache entry with only listeners gets evaluated (defaults to 0)."""
+    entry = {"listeners": 500, "debut_year": 2020}
+    blocked, reason = md.check_ai_artist("old entry", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
