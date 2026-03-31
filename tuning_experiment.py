@@ -19,7 +19,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from music_discovery import (
     _build_paths, load_dotenv, load_cache,
-    load_user_blocklist,
+    load_user_blocklist, load_ai_blocklist, load_ai_allowlist,
     filter_candidates, parse_library_jxa,
 )
 from compare_similarity import (
@@ -235,6 +235,10 @@ def main():
     filter_cache_data = load_cache(paths["filter_cache"])
     user_blocklist_path = pathlib.Path(__file__).parent / "blocklist.txt"
     user_blocklist = load_user_blocklist(user_blocklist_path)
+    ai_blocklist = load_ai_blocklist(
+        pathlib.Path(__file__).parent / "ai_blocklist.txt")
+    ai_allowlist = load_ai_allowlist(
+        pathlib.Path(__file__).parent / "ai_allowlist.txt")
     bl_cache = load_cache(paths["rejected_scrape"])
 
     # 3. Prefetch Apple Music data
@@ -271,7 +275,8 @@ def main():
                 apple_weight=aw,
                 neg_penalty=np_,
             )
-            ranked = filter_candidates(scored, filter_cache_data, user_blocklist)
+            ranked = filter_candidates(scored, filter_cache_data, user_blocklist,
+                                       ai_blocklist=ai_blocklist, ai_allowlist=ai_allowlist)
             variants[(aw, np_)] = ranked
 
     # 5. Generate and output report
