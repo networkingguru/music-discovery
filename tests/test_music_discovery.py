@@ -817,6 +817,59 @@ def test_filter_candidates_preserves_order():
     assert result == [(10.0, "a"), (7.0, "b"), (3.0, "c")]
 
 
+# ── filter_candidates with AI detection ───────────────────
+
+def test_filter_candidates_blocks_ai_static(monkeypatch):
+    """Rule 4 blocks artists on the AI static blocklist."""
+    monkeypatch.setattr(md, "ARTIST_BLOCKLIST", set())
+    scored = [(10.0, "elena veil"), (8.0, "real band")]
+    cache = {
+        "elena veil": {"listeners": 5000, "debut_year": 2020},
+        "real band": {"listeners": 5000, "debut_year": 2020},
+    }
+    result = md.filter_candidates(
+        scored, cache,
+        ai_blocklist={"elena veil"}, ai_allowlist=set())
+    names = [name for _, name in result]
+    assert "elena veil" not in names
+    assert "real band" in names
+
+
+def test_filter_candidates_ai_allowlist_overrides_blocklist(monkeypatch):
+    """AI allowlist prevents blocking even if on AI blocklist."""
+    monkeypatch.setattr(md, "ARTIST_BLOCKLIST", set())
+    scored = [(10.0, "mayhem")]
+    cache = {"mayhem": {"listeners": 5000, "debut_year": 1984}}
+    result = md.filter_candidates(
+        scored, cache,
+        ai_blocklist={"mayhem"}, ai_allowlist={"mayhem"})
+    assert len(result) == 1
+
+
+def test_filter_candidates_blocks_ai_metadata(monkeypatch):
+    """Rule 4 blocks artists that fail the metadata heuristic."""
+    monkeypatch.setattr(md, "ARTIST_BLOCKLIST", set())
+    scored = [(5.0, "ai filler")]
+    cache = {"ai filler": {
+        "listeners": 50, "debut_year": None, "bio_length": 0,
+        "tag_count": 0, "mb_type": None, "mb_has_releases": False,
+    }}
+    result = md.filter_candidates(
+        scored, cache,
+        ai_blocklist=set(), ai_allowlist=set())
+    assert len(result) == 0
+
+
+def test_filter_candidates_no_ai_args_skips_rule4(monkeypatch):
+    """When ai_blocklist/ai_allowlist are not passed, Rule 4 is skipped (backward compat)."""
+    monkeypatch.setattr(md, "ARTIST_BLOCKLIST", set())
+    scored = [(5.0, "elena veil")]
+    cache = {"elena veil": {"listeners": 50, "bio_length": 0, "tag_count": 0}}
+    result = md.filter_candidates(scored, cache)
+    # No AI args → no Rule 4 → artist passes
+    assert len(result) == 1
+
+
 # ── load_dotenv ────────────────────────────────────────────
 
 def test_load_dotenv_sets_key(tmp_path, monkeypatch):
