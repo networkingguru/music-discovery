@@ -1449,30 +1449,59 @@ def build_playlist(ranked, api_key, paths, xml_only=False):
     return True, all_tracks
 
 
-def filter_candidates(scored, filter_cache, file_blocklist=frozenset()):
-    """Remove candidates that are well-known artists the user likely already knows.
+def filter_candidates(scored, filter_cache, file_blocklist=frozenset(),
+                      ai_blocklist=None, ai_allowlist=None):
+    """Remove candidates that are well-known artists the user likely already knows,
+    or that are detected as AI-generated/fake.
     Exclusion rules (any one is sufficient):
       1. Name is in ARTIST_BLOCKLIST (hardcoded) or file_blocklist (auto-detected).
       2. Name matches a decade/era pattern (e.g. "70s", "80's music").
       3. listeners > POPULAR_THRESHOLD AND debut_year <= CLASSIC_YEAR.
-    If listener/debut values are missing, only rules 1–2 apply.
+      4. AI detection: check_ai_artist() (static blocklist + MB type + Last.fm heuristic).
     scored: list of (score, name) tuples.
-    filter_cache: {artist: {"listeners": int, "debut_year": int|None}} dict.
-    file_blocklist: set of lowercase names from blocklist_cache.json."""
+    filter_cache: {artist: {"listeners": int, ...}} dict.
+    file_blocklist: set of lowercase names from blocklist_cache.json.
+    ai_blocklist: set of lowercase names from ai_blocklist.txt (or None to skip Rule 4).
+    ai_allowlist: set of lowercase names from ai_allowlist.txt (or None)."""
     combined = ARTIST_BLOCKLIST | file_blocklist
     result = []
+    counts = {"blocklist": 0, "decade": 0, "popularity": 0,
+              "ai_static": 0, "ai_metadata": 0}
     for score, name in scored:
         if name in combined:
+            counts["blocklist"] += 1
+            log.debug(f"Filtered: {name} (blocklist)")
             continue
         if _DECADE_RE.match(name):
+            counts["decade"] += 1
+            log.debug(f"Filtered: {name} (decade pattern)")
             continue
-        data       = filter_cache.get(name, {})
+        data       = filter_cache.setdefault(name, {})
         listeners  = data.get("listeners")
         debut_year = data.get("debut_year")
         if (listeners is not None and listeners > POPULAR_THRESHOLD
                 and debut_year is not None and debut_year <= CLASSIC_YEAR):
+            counts["popularity"] += 1
+            log.debug(f"Filtered: {name} (popular classic: {listeners} listeners, debut {debut_year})")
             continue
+        # Rule 4: AI detection (only if ai_blocklist was provided)
+        if ai_blocklist is not None:
+            blocked, reason = check_ai_artist(
+                name, data, ai_blocklist, ai_allowlist or set())
+            if blocked:
+                if reason == "blocked_static":
+                    counts["ai_static"] += 1
+                else:
+                    counts["ai_metadata"] += 1
+                log.debug(f"Filtered: {name} (AI: {reason})")
+                continue
         result.append((score, name))
+    total_removed = len(scored) - len(result)
+    if total_removed > 0:
+        log.info(f"Filtered {len(scored)} → {len(result)} candidates: "
+                 f"{counts['blocklist']} blocklist, {counts['decade']} decade, "
+                 f"{counts['popularity']} popularity, {counts['ai_static']} AI-static, "
+                 f"{counts['ai_metadata']} AI-metadata")
     return result
 
 def score_artists(cache, library_artists, blocklist_cache=None, user_blocklist=None):
