@@ -21,6 +21,7 @@
 | `music_discovery.py` | Modify | `load_ai_blocklist()`, `load_ai_allowlist()`, `check_ai_artist()`, extend `fetch_filter_data()`, extend `filter_candidates()` |
 | `signal_experiment.py` | Modify | Load ai_blocklist/allowlist, add to `eval_exclude`, thread through scoring kwargs |
 | `signal_analysis.py` | Modify | Thread `ai_blocklist`/`ai_allowlist` through `_run_scoring()` |
+| `tuning_experiment.py` | Modify | Load ai_blocklist/allowlist, pass to `filter_candidates()` call at line 274 |
 | `tests/test_music_discovery.py` | Modify | Tests for all new/modified functions |
 | `tests/test_signal_analysis.py` | Modify | Tests for threading kwargs |
 
@@ -148,7 +149,6 @@ Nick Hustles
 Nina Blaze
 Nolan Graves
 Orion7
-Owen James
 Red Village
 Shifty Brent
 Soul Blues Icon
@@ -357,7 +357,7 @@ def test_fetch_filter_data_extracts_bio_tags_mb_type():
 
 
 def test_fetch_filter_data_no_mbid_falls_back_to_mb_search():
-    """When Last.fm returns no MBID, falls back to MusicBrainz name search."""
+    """When Last.fm returns no MBID, falls back to MusicBrainz name search + MBID detail."""
     search_resp = MagicMock()
     search_resp.status_code = 200
     search_resp.json.return_value = {
@@ -373,23 +373,30 @@ def test_fetch_filter_data_no_mbid_falls_back_to_mb_search():
             "tags": {"tag": []},
         }
     }
-    # MusicBrainz search returns a match
+    # MusicBrainz search returns a match (no releases in search response)
     mb_search_resp = MagicMock()
     mb_search_resp.status_code = 200
     mb_search_resp.json.return_value = {
         "artists": [{
             "name": "Fake Band",
+            "id": "abc-123",
             "score": 100,
             "type": "Group",
-            "releases": [{"title": "Album"}],
-            "relations": [],
         }]
     }
-    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp]):
-        result = md.fetch_filter_data("fake band", "fake_key")
+    # Follow-up MBID detail lookup (has releases)
+    mb_detail_resp = MagicMock()
+    mb_detail_resp.status_code = 200
+    mb_detail_resp.json.return_value = {
+        "releases": [{"title": "Album"}],
+        "life-span": {"begin": "2015"},
+    }
+    with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp, mb_detail_resp]):
+        with patch("time.sleep"):  # skip rate-limit sleeps in test
+            result = md.fetch_filter_data("fake band", "fake_key")
     assert result["mb_type"] == "Group"
     assert result["mb_has_releases"] is True
-    assert result["debut_year"] is None
+    assert result["debut_year"] == 2015
 
 
 def test_fetch_filter_data_mb_search_rejects_low_score():
@@ -415,7 +422,8 @@ def test_fetch_filter_data_mb_search_rejects_low_score():
         "artists": [{"name": "AI Bot X", "score": 50, "type": "Person"}]
     }
     with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp]):
-        result = md.fetch_filter_data("ai bot", "fake_key")
+        with patch("time.sleep"):
+            result = md.fetch_filter_data("ai bot", "fake_key")
     assert result.get("mb_type") is None
     assert result.get("mb_has_releases") is False
 
@@ -443,7 +451,8 @@ def test_fetch_filter_data_mb_search_rejects_name_mismatch():
         "artists": [{"name": "Elena", "score": 90, "type": "Person"}]
     }
     with patch("requests.get", side_effect=[search_resp, lastfm_resp, mb_search_resp]):
-        result = md.fetch_filter_data("elena veil", "fake_key")
+        with patch("time.sleep"):
+            result = md.fetch_filter_data("elena veil", "fake_key")
     assert result.get("mb_type") is None
 
 
@@ -490,20 +499,18 @@ MUSICBRAINZ_SEARCH_URL = "https://musicbrainz.org/ws/2/artist/"
 In `music_discovery.py`, before `fetch_filter_data()` (around line 688):
 
 ```python
-import re as _re
-
 def _clean_bio_length(bio_content):
     """Return length of bio content after stripping HTML and Last.fm boilerplate."""
     if not bio_content:
         return 0
     # Strip HTML tags
-    text = _re.sub(r"<[^>]+>", "", bio_content)
+    text = re.sub(r"<[^>]+>", "", bio_content)
     # Strip Last.fm boilerplate suffix
-    text = _re.sub(r"\s*Read more on Last\.fm\.?\s*$", "", text, flags=_re.IGNORECASE)
+    text = re.sub(r"\s*Read more on Last\.fm\.?\s*$", "", text, flags=re.IGNORECASE)
     return len(text.strip())
 ```
 
-Note: `import re as _re` — check if `re` is already imported at the top of the file. If so, use the existing import name instead.
+Note: `re` is already imported at the top of `music_discovery.py` (line 14). Do NOT add another import.
 
 - [ ] **Step 5: Extend `fetch_filter_data()` implementation**
 
@@ -574,6 +581,7 @@ def fetch_filter_data(artist, api_key):
                 mb_has_releases = len(mb_data.get("releases", [])) > 0
         else:
             # Fallback: MusicBrainz name search
+            time.sleep(1.1)  # MusicBrainz rate limit
             mb_search_resp = requests.get(
                 MUSICBRAINZ_SEARCH_URL,
                 timeout=10,
@@ -588,10 +596,22 @@ def fetch_filter_data(artist, api_key):
                     mb_name = top.get("name", "")
                     if score >= 80 and mb_name.strip().lower() == artist.strip().lower():
                         mb_type = top.get("type")
-                        mb_has_releases = len(top.get("releases", [])) > 0
-                        begin = (top.get("life-span", {}).get("begin") or "").strip()
-                        if begin:
-                            debut_year = int(begin[:4])
+                        # Search API doesn't return releases — do MBID lookup
+                        found_id = top.get("id", "")
+                        if found_id:
+                            time.sleep(1.1)  # MusicBrainz rate limit
+                            mb_detail = requests.get(
+                                MUSICBRAINZ_API_URL.format(found_id),
+                                timeout=10,
+                                headers={"User-Agent": MB_USER_AGENT},
+                                params={"fmt": "json", "inc": "releases"},
+                            )
+                            if mb_detail.status_code == 200:
+                                detail = mb_detail.json()
+                                mb_has_releases = len(detail.get("releases", [])) > 0
+                                begin = (detail.get("life-span", {}).get("begin") or "").strip()
+                                if begin:
+                                    debut_year = int(begin[:4])
 
         return {
             "listeners": listeners,
@@ -644,7 +664,22 @@ assert result["mb_type"] == "Group"
 assert result["mb_has_releases"] is True
 ```
 
-Apply similar updates to: `test_fetch_filter_data_missing_mbid`, `test_fetch_filter_data_lastfm_failure`, `test_fetch_filter_data_network_error`, `test_fetch_filter_data_year_only_begin`, `test_fetch_filter_data_uses_search_for_canonical_name`, `test_fetch_filter_data_falls_back_when_search_empty`, `test_fetch_filter_data_falls_back_when_search_fails`, `test_fetch_filter_data_both_calls_fail`.
+Per-test update guide (key distinction: tests where `mbid=""` now trigger an additional MB search call, so `side_effect` lists need one more mock response):
+
+**Tests with MBID (add bio/tags to Last.fm mock, add type/releases to MB mock, expand assertions):**
+- `test_fetch_filter_data_returns_listeners_and_debut` — shown above
+- `test_fetch_filter_data_year_only_begin` — add bio/tags to lastfm mock, add type/releases to mb mock
+- `test_fetch_filter_data_uses_search_for_canonical_name` — add bio/tags, add type/releases to mb mock
+
+**Tests without MBID (add bio/tags to Last.fm mock, ADD a 3rd mock for MB search, wrap with `patch("time.sleep")`):**
+- `test_fetch_filter_data_missing_mbid` — `side_effect` currently has 2 items, needs 3rd for MB search. Add empty `{"artists": []}` MB search mock. Also add `with patch("time.sleep"):`.
+- `test_fetch_filter_data_falls_back_when_search_empty` — same: add 3rd MB search mock
+- `test_fetch_filter_data_falls_back_when_search_fails` — same: add 3rd MB search mock
+
+**Failure-path tests (no mock changes needed, just verify they still return `{}`):**
+- `test_fetch_filter_data_lastfm_failure` — getInfo returns 500, code returns `{}` before reaching bio/MB. No changes needed.
+- `test_fetch_filter_data_network_error` — `requests.get` raises Exception, caught by outer handler. No changes needed.
+- `test_fetch_filter_data_both_calls_fail` — both calls fail. No changes needed.
 
 - [ ] **Step 8: Run full test suite to verify no regressions**
 
@@ -673,6 +708,8 @@ Add to `tests/test_music_discovery.py`:
 ```python
 # ── check_ai_artist ───────────────────────────────────────
 
+import datetime  # needed for TTL boundary tests
+
 AI_BL = {"elena veil", "deep watch"}
 AI_AL = {"mayhem"}
 
@@ -697,22 +734,23 @@ def test_check_ai_artist_static_blocklist_overrides_cache():
 
 def test_check_ai_artist_cache_hit_pass():
     """Cached pass is returned without further checks."""
-    entry = {"ai_check": "pass", "ai_check_date": "2026-03-30"}
+    entry = {"ai_check": "pass", "ai_check_date": datetime.date.today().isoformat()}
     blocked, reason = md.check_ai_artist("some artist", entry, AI_BL, set())
     assert blocked is False
     assert reason == "pass"
 
 def test_check_ai_artist_cache_hit_whitelisted():
     """Cached whitelisted_mb is returned."""
-    entry = {"ai_check": "whitelisted_mb", "ai_check_date": "2026-03-30"}
+    entry = {"ai_check": "whitelisted_mb", "ai_check_date": datetime.date.today().isoformat()}
     blocked, reason = md.check_ai_artist("real band", entry, AI_BL, set())
     assert blocked is False
     assert reason == "whitelisted_mb"
 
 def test_check_ai_artist_cache_blocked_metadata_expired():
     """Expired blocked_metadata (>90 days) is re-evaluated."""
+    expired_date = (datetime.date.today() - datetime.timedelta(days=91)).isoformat()
     entry = {
-        "ai_check": "blocked_metadata", "ai_check_date": "2025-12-01",
+        "ai_check": "blocked_metadata", "ai_check_date": expired_date,
         "listeners": 500, "bio_length": 0, "tag_count": 0,
         "mb_type": None, "mb_has_releases": False,
     }
@@ -723,12 +761,34 @@ def test_check_ai_artist_cache_blocked_metadata_expired():
 
 def test_check_ai_artist_cache_blocked_metadata_fresh():
     """Fresh blocked_metadata (<90 days) is returned from cache."""
+    fresh_date = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
     entry = {
-        "ai_check": "blocked_metadata", "ai_check_date": "2026-03-15",
+        "ai_check": "blocked_metadata", "ai_check_date": fresh_date,
     }
     blocked, reason = md.check_ai_artist("recent block", entry, set(), set())
     assert blocked is True
     assert reason == "blocked_metadata"
+
+def test_check_ai_artist_cache_blocked_metadata_boundary_day89():
+    """blocked_metadata at exactly 89 days is still fresh (< 90)."""
+    day89 = (datetime.date.today() - datetime.timedelta(days=89)).isoformat()
+    entry = {"ai_check": "blocked_metadata", "ai_check_date": day89}
+    blocked, reason = md.check_ai_artist("boundary", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_cache_blocked_metadata_boundary_day90():
+    """blocked_metadata at exactly 90 days expires and re-evaluates."""
+    day90 = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+    entry = {
+        "ai_check": "blocked_metadata", "ai_check_date": day90,
+        "listeners": 5000, "bio_length": 200, "tag_count": 3,
+        "mb_type": None, "mb_has_releases": False,
+    }
+    blocked, reason = md.check_ai_artist("boundary90", entry, set(), set())
+    # Re-evaluated: now has good metadata → passes
+    assert blocked is False
+    assert reason == "pass"
 
 def test_check_ai_artist_mb_group_with_releases_whitelists():
     """MusicBrainz Group with releases → whitelisted."""
@@ -785,6 +845,59 @@ def test_check_ai_artist_empty_entry_passes():
     blocked, reason = md.check_ai_artist("unknown", {}, set(), set())
     assert blocked is False
     assert reason == "pass"
+
+def test_check_ai_artist_case_insensitive():
+    """Mixed-case name is lowercased before checking blocklist."""
+    blocked, reason = md.check_ai_artist("Elena Veil", {}, {"elena veil"}, set())
+    assert blocked is True
+    assert reason == "blocked_static"
+
+def test_check_ai_artist_malformed_date():
+    """Malformed ai_check_date triggers re-evaluation, not crash."""
+    entry = {
+        "ai_check": "blocked_metadata", "ai_check_date": "not-a-date",
+        "listeners": 500, "bio_length": 0, "tag_count": 0,
+        "mb_type": None, "mb_has_releases": False,
+    }
+    blocked, reason = md.check_ai_artist("bad date", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
+
+def test_check_ai_artist_static_blocklist_does_not_cache():
+    """Static blocklist hit does not write ai_check to cache entry."""
+    entry = {"listeners": 5000}
+    blocked, reason = md.check_ai_artist("elena veil", entry, {"elena veil"}, set())
+    assert blocked is True
+    assert "ai_check" not in entry
+
+def test_check_ai_artist_allowlist_overrides_metadata_heuristic():
+    """Allowlisted artist passes even if metadata would block them."""
+    entry = {"listeners": 10, "bio_length": 0, "tag_count": 0,
+             "mb_type": None, "mb_has_releases": False}
+    blocked, reason = md.check_ai_artist("my fave", entry, set(), {"my fave"})
+    assert blocked is False
+
+def test_check_ai_artist_mb_orchestra_whitelists():
+    """MusicBrainz Orchestra with releases → whitelisted."""
+    entry = {"mb_type": "Orchestra", "mb_has_releases": True,
+             "listeners": 50, "bio_length": 0, "tag_count": 0}
+    blocked, reason = md.check_ai_artist("philharmonic", entry, set(), set())
+    assert blocked is False
+    assert reason == "whitelisted_mb"
+
+def test_check_ai_artist_writes_ai_check_date():
+    """ai_check_date is written alongside ai_check for cache entries."""
+    entry = {"mb_type": "Group", "mb_has_releases": True,
+             "listeners": 50, "bio_length": 0, "tag_count": 0}
+    md.check_ai_artist("real band", entry, set(), set())
+    assert entry["ai_check_date"] == datetime.date.today().isoformat()
+
+def test_check_ai_artist_old_cache_entry_no_bio_tag_fields():
+    """Pre-AI cache entry with only listeners gets evaluated (defaults to 0)."""
+    entry = {"listeners": 500, "debut_year": 2020}
+    blocked, reason = md.check_ai_artist("old entry", entry, set(), set())
+    assert blocked is True
+    assert reason == "blocked_metadata"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -797,8 +910,6 @@ Expected: FAIL with `AttributeError: module 'music_discovery' has no attribute '
 Add to `music_discovery.py` after `load_ai_allowlist()`:
 
 ```python
-import datetime as _datetime
-
 # Whitelist MB types that indicate a real artist
 _MB_WHITELIST_TYPES = {"Person", "Group", "Orchestra", "Choir"}
 _AI_CACHE_TTL_DAYS = 90
@@ -826,6 +937,8 @@ def check_ai_artist(name, filter_entry, ai_blocklist, ai_allowlist):
     Side effect:
         Updates filter_entry with ai_check and ai_check_date fields.
     """
+    name = name.strip().lower()
+
     # Step 1: Allowlist
     if name in ai_allowlist:
         return False, "allowlist"
@@ -842,8 +955,8 @@ def check_ai_artist(name, filter_entry, ai_blocklist, ai_allowlist):
             check_date = filter_entry.get("ai_check_date", "")
             if check_date:
                 try:
-                    age = (_datetime.date.today()
-                           - _datetime.date.fromisoformat(check_date))
+                    age = (datetime.date.today()
+                           - datetime.date.fromisoformat(check_date))
                     if age.days < _AI_CACHE_TTL_DAYS:
                         return True, "blocked_metadata"
                 except ValueError:
@@ -865,7 +978,7 @@ def check_ai_artist(name, filter_entry, ai_blocklist, ai_allowlist):
     mb_has_releases = filter_entry.get("mb_has_releases", False)
     if mb_type in _MB_WHITELIST_TYPES and mb_has_releases:
         filter_entry["ai_check"] = "whitelisted_mb"
-        filter_entry["ai_check_date"] = _datetime.date.today().isoformat()
+        filter_entry["ai_check_date"] = datetime.date.today().isoformat()
         return False, "whitelisted_mb"
 
     # Step 5: Last.fm metadata heuristic
@@ -879,12 +992,12 @@ def check_ai_artist(name, filter_entry, ai_blocklist, ai_allowlist):
 
     if listeners < 1000 and bio_length < 50 and tag_count == 0:
         filter_entry["ai_check"] = "blocked_metadata"
-        filter_entry["ai_check_date"] = _datetime.date.today().isoformat()
+        filter_entry["ai_check_date"] = datetime.date.today().isoformat()
         return True, "blocked_metadata"
 
     # Step 7: Default pass
     filter_entry["ai_check"] = "pass"
-    filter_entry["ai_check_date"] = _datetime.date.today().isoformat()
+    filter_entry["ai_check_date"] = datetime.date.today().isoformat()
     return False, "pass"
 ```
 
@@ -1003,7 +1116,7 @@ def filter_candidates(scored, filter_cache, file_blocklist=frozenset(),
             counts["decade"] += 1
             log.debug(f"Filtered: {name} (decade pattern)")
             continue
-        data       = filter_cache.get(name, {})
+        data       = filter_cache.setdefault(name, {})
         listeners  = data.get("listeners")
         debut_year = data.get("debut_year")
         if (listeners is not None and listeners > POPULAR_THRESHOLD
@@ -1235,10 +1348,23 @@ for i, name in enumerate(names, 1):
             top = artists[0]
             if (top.get("score", 0) >= 80
                     and top.get("name", "").strip().lower() == name.strip().lower()
-                    and top.get("type") in ("Person", "Group", "Orchestra", "Choir")
-                    and len(top.get("releases", [])) > 0):
-                collisions.append((name, top["type"], top.get("score")))
-                print(f"  *** COLLISION: {top['type']}, score={top['score']}")
+                    and top.get("type") in ("Person", "Group", "Orchestra", "Choir")):
+                # Search API doesn't return releases — do MBID lookup
+                found_id = top.get("id", "")
+                has_releases = False
+                if found_id:
+                    time.sleep(1.1)
+                    detail = requests.get(
+                        f"https://musicbrainz.org/ws/2/artist/{found_id}",
+                        headers={"User-Agent": "MusicDiscoveryTool/1.0 (https://github.com/networkingguru/music-discovery)"},
+                        params={"fmt": "json", "inc": "releases"},
+                        timeout=10,
+                    )
+                    if detail.status_code == 200:
+                        has_releases = len(detail.json().get("releases", [])) > 0
+                if has_releases:
+                    collisions.append((name, top["type"], top.get("score")))
+                    print(f"  *** COLLISION: {top['type']}, score={top['score']}, has releases")
     time.sleep(1.1)
 
 print(f"\n=== {len(collisions)} collisions found ===")
@@ -1348,20 +1474,49 @@ Add after it:
         pathlib.Path(__file__).parent / "ai_allowlist.txt")
 ```
 
-- [ ] **Step 2: Thread through to `filter_candidates()` calls in `main()`**
+- [ ] **Step 2: Thread through to `filter_candidates()` call in `main()`**
 
-Find all calls to `filter_candidates()` in `main()` and add `ai_blocklist=ai_blocklist, ai_allowlist=ai_allowlist` kwargs. There should be one or more calls — search for `filter_candidates(` in the function.
+There is one call at line ~1602. Change it to:
 
-- [ ] **Step 3: Run full test suite**
+```python
+    ranked = filter_candidates(scored, filter_cache, file_blocklist | md_exclusion,
+                               ai_blocklist=ai_blocklist, ai_allowlist=ai_allowlist)
+```
+
+- [ ] **Step 3: Save filter_cache after filter_candidates to persist ai_check results**
+
+Add after the `filter_candidates()` call:
+
+```python
+    save_cache(filter_cache, paths["filter_cache"])
+```
+
+This persists the `ai_check`/`ai_check_date` fields written by `check_ai_artist()` so they are cached across runs.
+
+- [ ] **Step 4: Also update `tuning_experiment.py`**
+
+In `tuning_experiment.py`, find the `filter_candidates()` call at line ~274. Load AI lists and pass them through:
+
+```python
+    from music_discovery import load_ai_blocklist, load_ai_allowlist
+    ai_blocklist = load_ai_blocklist(
+        pathlib.Path(__file__).parent / "ai_blocklist.txt")
+    ai_allowlist = load_ai_allowlist(
+        pathlib.Path(__file__).parent / "ai_allowlist.txt")
+```
+
+Then update the `filter_candidates()` call to include `ai_blocklist=ai_blocklist, ai_allowlist=ai_allowlist`.
+
+- [ ] **Step 5: Run full test suite**
 
 Run: `python3 -m pytest tests/ -x -q`
 Expected: ALL PASSED
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add music_discovery.py
-git commit -m "feat: load AI blocklist/allowlist in music_discovery main()"
+git add music_discovery.py tuning_experiment.py
+git commit -m "feat: load AI blocklist/allowlist in music_discovery main() and tuning_experiment"
 ```
 
 ---
@@ -1424,6 +1579,6 @@ print('All AI detection checks passed.')
 - [ ] **Step 4: Commit final state**
 
 ```bash
-git add -A
+git add music_discovery.py signal_analysis.py signal_experiment.py tuning_experiment.py ai_blocklist.txt ai_allowlist.txt tests/
 git commit -m "feat: AI artist detection complete — static blocklist, MB type, Last.fm heuristic"
 ```
