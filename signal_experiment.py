@@ -24,7 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from music_discovery import (
     _build_paths, load_dotenv, load_cache, load_user_blocklist, load_blocklist,
-    parse_library_jxa,
+    parse_library_jxa, load_ai_blocklist, load_ai_allowlist,
 )
 from compare_similarity import generate_apple_music_token, AppleMusicClient
 from signal_collectors import (
@@ -308,7 +308,8 @@ def run_statistical_test(cumulative, min_n=30):
 
 def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
                    user_blocklist, top_n=TOP_N,
-                   filter_cache=None, file_blocklist=frozenset()):
+                   filter_cache=None, file_blocklist=frozenset(),
+                   ai_blocklist=None, ai_allowlist=None):
     """Run all four analysis phases and generate the report."""
     scoring_kwargs = {
         "apple_cache": apple_cache,
@@ -317,6 +318,8 @@ def run_experiment(signals, scrape_cache, apple_cache, rejected_cache,
         "user_blocklist": user_blocklist,
         "filter_cache": filter_cache,
         "file_blocklist": file_blocklist,
+        "ai_blocklist": ai_blocklist,
+        "ai_allowlist": ai_allowlist,
     }
 
     log.info("\n--- Phase A: Individual Signal Profiling ---")
@@ -599,8 +602,12 @@ def main():
         pathlib.Path(__file__).parent / "blocklist.txt")
     filter_cache = load_cache(paths["filter_cache"])
     file_blocklist = load_blocklist(paths["blocklist"])
+    ai_blocklist = load_ai_blocklist(
+        pathlib.Path(__file__).parent / "ai_blocklist.txt")
+    ai_allowlist = load_ai_allowlist(
+        pathlib.Path(__file__).parent / "ai_allowlist.txt")
     library_artists = set(signals["favorites"].keys()) | set(signals["playcount"].keys())
-    eval_exclude = library_artists | user_blocklist | file_blocklist
+    eval_exclude = library_artists | user_blocklist | file_blocklist | ai_blocklist
 
     if args.post_listen:
         new_favorites = parse_library_jxa()
@@ -774,7 +781,8 @@ def main():
     report, phase_a, phase_d = run_experiment(
         signals, scrape_cache, apple_cache, rejected_cache,
         user_blocklist, top_n=args.top_n,
-        filter_cache=filter_cache, file_blocklist=file_blocklist)
+        filter_cache=filter_cache, file_blocklist=file_blocklist,
+        ai_blocklist=ai_blocklist, ai_allowlist=ai_allowlist)
 
     report_path = pathlib.Path(__file__).parent / REPORT_FILENAME
     report_path.write_text(report)
