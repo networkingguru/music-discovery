@@ -1465,6 +1465,7 @@ def filter_candidates(scored, filter_cache, file_blocklist=frozenset(),
     ai_allowlist: set of lowercase names from ai_allowlist.txt (or None)."""
     combined = ARTIST_BLOCKLIST | file_blocklist
     result = []
+    ai_blocked_entries = []
     counts = {"blocklist": 0, "decade": 0, "popularity": 0,
               "ai_static": 0, "ai_metadata": 0}
     for score, name in scored:
@@ -1493,6 +1494,7 @@ def filter_candidates(scored, filter_cache, file_blocklist=frozenset(),
                     counts["ai_static"] += 1
                 else:
                     counts["ai_metadata"] += 1
+                ai_blocked_entries.append((name, reason, data))
                 log.debug(f"Filtered: {name} (AI: {reason})")
                 continue
         result.append((score, name))
@@ -1502,7 +1504,30 @@ def filter_candidates(scored, filter_cache, file_blocklist=frozenset(),
                  f"{counts['blocklist']} blocklist, {counts['decade']} decade, "
                  f"{counts['popularity']} popularity, {counts['ai_static']} AI-static, "
                  f"{counts['ai_metadata']} AI-metadata")
+    # Write AI detection log for review
+    if ai_blocked_entries:
+        _write_ai_detection_log(ai_blocked_entries)
     return result
+
+
+def _write_ai_detection_log(entries):
+    """Append AI-blocked artists to the detection log file for user review."""
+    log_path = pathlib.Path.home() / ".cache" / "music_discovery" / "ai_detection_log.txt"
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n── {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} ──\n")
+            for name, reason, data in entries:
+                if reason == "blocked_static":
+                    f.write(f"  {name}  [static blocklist]\n")
+                else:
+                    listeners = data.get("listeners", "?")
+                    bio_len = data.get("bio_length", "?")
+                    tag_count = data.get("tag_count", "?")
+                    mb_type = data.get("mb_type", "none")
+                    f.write(f"  {name}  [metadata: listeners={listeners}, "
+                            f"bio_len={bio_len}, tags={tag_count}, mb_type={mb_type}]\n")
+    except OSError as e:
+        log.debug(f"Could not write AI detection log: {e}")
 
 def score_artists(cache, library_artists, blocklist_cache=None, user_blocklist=None):
     """Score non-library candidates using weighted proximity formula with negative scoring.
