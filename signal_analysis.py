@@ -22,13 +22,18 @@ def _run_scoring(cache, signals, weights, **kwargs):
 
     If filter_cache and file_blocklist are in kwargs, applies
     filter_candidates after scoring to remove well-known artists.
+    Also forwards ai_blocklist and ai_allowlist for AI detection.
     """
     filter_cache = kwargs.pop("filter_cache", None)
     file_blocklist = kwargs.pop("file_blocklist", frozenset())
+    ai_blocklist = kwargs.pop("ai_blocklist", None)
+    ai_allowlist = kwargs.pop("ai_allowlist", None)
     ranked = score_candidates_multisignal(cache, signals, weights, **kwargs)
     if filter_cache is not None:
         from music_discovery import filter_candidates
-        ranked = filter_candidates(ranked, filter_cache, file_blocklist)
+        ranked = filter_candidates(ranked, filter_cache, file_blocklist,
+                                   ai_blocklist=ai_blocklist,
+                                   ai_allowlist=ai_allowlist)
     return ranked
 
 

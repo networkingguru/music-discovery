@@ -171,3 +171,31 @@ def test_phase_d_includes_ratings_configs():
     names = [r["name"] for r in recs]
     assert "Ratings-Heavy" in names
     assert "Ratings+Favorites Blend" in names
+
+
+def test_run_scoring_passes_ai_blocklist_to_filter(monkeypatch):
+    """ai_blocklist and ai_allowlist are forwarded to filter_candidates."""
+    from signal_analysis import _run_scoring
+
+    captured = {}
+    def mock_filter(scored, fc, file_blocklist=frozenset(),
+                    ai_blocklist=None, ai_allowlist=None):
+        captured["ai_blocklist"] = ai_blocklist
+        captured["ai_allowlist"] = ai_allowlist
+        return scored
+
+    monkeypatch.setattr("music_discovery.filter_candidates", mock_filter)
+
+    cache = {"seed": {"candidate": 0.5}}
+    signals = {
+        "favorites": {"seed": 10},
+        "playcount": {}, "playlists": {}, "ratings": {},
+        "heavy_rotation": {}, "recommendations": {},
+    }
+    from signal_scoring import DEFAULT_WEIGHTS
+    _run_scoring(cache, signals, DEFAULT_WEIGHTS,
+                 filter_cache={"candidate": {}},
+                 ai_blocklist={"elena veil"},
+                 ai_allowlist={"mayhem"})
+    assert captured["ai_blocklist"] == {"elena veil"}
+    assert captured["ai_allowlist"] == {"mayhem"}
