@@ -675,6 +675,16 @@ def load_user_blocklist(path):
                 names.add(line.lower())
     return names
 
+def load_ai_blocklist(path):
+    """Load AI/fake artist blocklist (plain text, same format as blocklist.txt).
+    Returns a set of lowercase artist names."""
+    return load_user_blocklist(path)
+
+def load_ai_allowlist(path):
+    """Load AI allowlist — artists that should never be blocked by AI detection.
+    Returns a set of lowercase artist names."""
+    return load_user_blocklist(path)
+
 def detect_blocklist_candidates(scored, filter_cache):
     """Return names that are almost certainly non-artists, to auto-add to the blocklist.
     Only flags entries still {} in filter_cache after the re-fetch pass — meaning
@@ -820,6 +830,8 @@ def search_itunes(artist, track_name):
         if resp.status_code != 200:
             return None
         results = resp.json().get("results", [])
+        # Filter out music videos — only accept actual songs
+        results = [r for r in results if r.get("kind") == "song"]
         artist_lower = artist.strip().lower()
         for r in results:
             result_artist = r.get("artistName", "").strip().lower()
