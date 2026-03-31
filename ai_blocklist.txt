@@ -1,0 +1,180 @@
+# AI / Fake Artist Blocklist — Music Discovery
+# One artist name per line (case-insensitive). Blank lines and # comments are ignored.
+# Sources: MBW investigations, SlopTracker.org, Reddit, court filings, journalism.
+# See docs/superpowers/specs/2026-03-31-ai-artist-detection-design.md for details.
+#
+# COLLISION AUDIT: Names removed due to real-artist collisions:
+#   Mayhem, Aven, Nora Van Elken, DV8, David Allen, Owen James,
+#   Shea, Hermann, Fellows, Callous
+
+# ── MBW "Original 50" (Quiz & Larossi pseudonyms, 2017) ──
+Aaron Lansing
+Advaitas
+Allysa Nelson
+Amity Cadet
+Amy Yeager
+Ana Olgica
+Antologie
+Benny Bernstein
+Benny Treskow
+Bon Vie
+Caro Utobarto
+Charles Bolt
+Charlie Key
+Christopher Colman
+Clay Edwards
+Deep Watch
+Dylan Francis
+Enno Aare
+Evelyn Stein
+Evolution Of Stars
+Gabriel Parker
+Giuseppe Galvetti
+Greg Barley
+Heinz Goldblatt
+Hiroshi Yamazaki
+Hultana
+Jeff Bright Jr
+Jonathan Coffey
+Jozef Gatysik
+Karin Borg
+Leon Noel
+Lo Mimieux
+Martin Fox
+Mbo Mentho
+Mia Strass
+Milos Stavos
+Novo Talos
+Otto Wahl
+Pernilla Mayer
+Piotr Miteska
+Relajar
+Risto Carto
+Sam Eber
+Samuel Lindon
+The 2 Inversions
+They Dream By Day
+Tony Lieberman
+Wilma Harrods
+
+# ── Johan Rohr / Firefly / Chillmi pseudonyms (2022-2024) ──
+Adelmar Borrego
+Csizmazia Etel
+Maya Astrom
+Minik Knudsen
+Mingmei Hsueh
+
+# ── Epidemic Sound / PFC ghost artists ──
+Bela Nemeth
+Cadet de l'espace
+Grobert
+Julius Aston
+Koral Banko
+Max Swan
+Nebula Somni
+Sigimund
+Sub-City Keys
+Tomasz Kraal
+Tonie Green
+Volta Celeste
+
+# ── SlopTracker.org (Suno/Udio AI, 2025-2026) ──
+19s Soulers
+Abel Abaddon
+Ash Reed
+Aventhis
+Backroad Raised
+Black River Whiskey
+Breaking Rust
+Broken Trails
+Cain Walker
+Caleb Raines
+Colter Rayne
+Damon Price
+Doc Raven
+Domus Made
+Drew Meadows
+Eli Creed
+Enlly
+Enlly Blue
+Frontier Heart
+Georgia Phantom
+JD Steel
+Jerry's Sound Room
+King Willonius
+Lana Rosewood
+Let Babylon Burn
+Lone Star Lyric House
+Mason Jar Moonshine
+Morgan Luna
+Nick Hustles
+Nina Blaze
+Nolan Graves
+Orion7
+Red Village
+Shifty Brent
+Soul Blues Icon
+Soul'd Out
+Sons of Ashes
+starletste_official
+The Naughty Jukebox
+The Soulful Gentlemen
+True Roots Blues
+Unbound Music
+Vowless
+Whiskey Circuit
+ZionRay
+
+# ── MBW 2025 AI investigation ──
+Funkorama
+Hyperdrive Sound
+Stellar Cruise
+Terry "Goldmind" Watkins
+The Devil Inside
+The Smoothies
+The Velvet Sundown
+Velvet Funk
+What Is?
+
+# ── Reddit / Slate / Whiskey Riff AI cover bands ──
+Highway Outlaws
+Saltwater Saddles
+Terry & The Dustriders
+Waterfront Wranglers
+
+# ── Adam Faze investigation (2023) ──
+Crash Tortoise
+Isabelle Morninglocks
+Queezpoor
+The Brave Android
+Viper Beelzebub
+
+# ── Michael Smith streaming fraud (2024-2026) ──
+Calm Baseball
+Calm Connected
+Calm Identity
+Calm Knuckles
+Calliope Bloom
+Calliope Erratum
+Zygotic Washstands
+
+# ── Wargame-confirmed AI filler ──
+Adriana Soulful
+Calming River
+Deep Ambient Moods
+Elena Veil
+Jade Amara
+Luna Pearl
+Serene Rainfall
+Soul Kitchen Radio
+Warm Breeze
+White Noise Baby Sleep
+
+# ── Known virtual/AI artists ──
+FN Meka
+Miquela
+Ghostwriter
+Sleepy John
+
+# ── Sony Music / Yellowstone mood music ──
+# (Sleepy John listed above)

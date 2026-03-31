@@ -1,0 +1,4 @@
+# AI Allowlist — Music Discovery
+# Artists listed here will NEVER be blocked by AI detection.
+# Use this to override false positives from ai_blocklist.txt or the metadata heuristic.
+# One artist name per line (case-insensitive). Blank lines and # comments are ignored.
