@@ -952,7 +952,8 @@ def _run_applescript(script):
         )
         return result.stdout.strip(), result.returncode
     except subprocess.TimeoutExpired:
-        raise RuntimeError("osascript timed out after 30 seconds")
+        log.debug("osascript timed out after 30 seconds")
+        return "", -1
 
 
 def _run_jxa(script):
@@ -1208,9 +1209,9 @@ end tell
     lib_script = f'''
 tell application "Music"
     try
-        set sr to search library playlist 1 for "{safe_ct_name}"
+        set sr to search library playlist 1 for "{safe_ct_artist}"
         repeat with t in sr
-            if artist of t is "{safe_ct_artist}" then
+            if name of t is "{safe_ct_name}" and artist of t is "{safe_ct_artist}" then
                 duplicate t to user playlist "Music Discovery"
                 return "ok_library:{safe_ct_name}|||{safe_ct_artist}"
             end if
@@ -1250,9 +1251,9 @@ end tell
     playlist_script = f'''
 tell application "Music"
     try
-        set sr to search library playlist 1 for "{safe_ct_name}"
+        set sr to search library playlist 1 for "{safe_ct_artist}"
         repeat with t in sr
-            if artist of t is "{safe_ct_artist}" then
+            if name of t is "{safe_ct_name}" and artist of t is "{safe_ct_artist}" then
                 duplicate t to user playlist "Music Discovery"
                 return "ok_added:{safe_ct_name}|||{safe_ct_artist}"
             end if
