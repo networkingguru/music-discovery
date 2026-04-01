@@ -492,12 +492,13 @@ end tell
     safe_ct_artist = _applescript_escape(ct_artist)
 
     # Try to find in library and add to playlist
+    # Search by artist (more specific than short track names like "Love I")
     lib_script = f'''
 tell application "Music"
     try
-        set sr to search library playlist 1 for "{safe_ct_name}"
+        set sr to search library playlist 1 for "{safe_ct_artist}"
         repeat with t in sr
-            if artist of t is "{safe_ct_artist}" then
+            if name of t is "{safe_ct_name}" and artist of t is "{safe_ct_artist}" then
                 duplicate t to user playlist "{safe_pl}"
                 return "ok"
             end if
@@ -532,9 +533,9 @@ end tell
     playlist_script = f'''
 tell application "Music"
     try
-        set sr to search library playlist 1 for "{safe_ct_name}"
+        set sr to search library playlist 1 for "{safe_ct_artist}"
         repeat with t in sr
-            if artist of t is "{safe_ct_artist}" then
+            if name of t is "{safe_ct_name}" and artist of t is "{safe_ct_artist}" then
                 duplicate t to user playlist "{safe_pl}"
                 return "ok"
             end if
