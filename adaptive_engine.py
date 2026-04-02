@@ -1032,6 +1032,17 @@ end tell
     offered_path = cache_dir / "offered_tracks.json"
     offered_set, offered_entries = _load_offered_tracks(offered_path)
 
+    # Pre-seed offered_set with all library tracks so we only offer deep cuts
+    # (These are NOT written to offered_tracks.json — only used for filtering)
+    library_track_count = 0
+    for track in track_metadata:
+        t_artist = (track.get("artist") or "").lower().strip()
+        t_name = (track.get("name") or "").lower().strip()
+        if t_artist and t_name:
+            offered_set.add((t_artist, t_name))
+            library_track_count += 1
+    log.info("  Pre-seeded %d library tracks into dedup set.", library_track_count)
+
     offered_tracks: set = set()  # (artist, track_name) for this round's snapshot
     artist_idx = 0
     slots_filled = 0
