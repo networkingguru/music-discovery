@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from adaptive_engine import (
     DEFAULT_ALPHA,
     DEFAULT_COOLDOWN_ROUNDS,
+    _normalize_affinity,
     apply_overrides,
     check_cooldown,
     compute_final_score,
@@ -254,3 +255,43 @@ class TestRankCandidates:
         overrides = {"pins": {"a": 1.0}}
         ranked = rank_candidates(scores, overrides=overrides)
         assert ranked[0] == (1.0, "a")
+
+
+# ── _normalize_affinity ─────────────────────────────────────────────────────
+
+
+class TestNormalizeAffinity:
+    def test_preserves_negatives(self):
+        """Symmetric normalization maps to [-1, 1], preserving negative scores."""
+        raw = {"a": 0.5, "b": -0.3, "c": 1.0, "d": -1.0}
+        normed = _normalize_affinity(raw)
+        assert normed["a"] == pytest.approx(0.5)
+        assert normed["b"] == pytest.approx(-0.3)
+        assert normed["c"] == pytest.approx(1.0)
+        assert normed["d"] == pytest.approx(-1.0)
+
+    def test_empty(self):
+        """Empty dict returns empty."""
+        assert _normalize_affinity({}) == {}
+
+    def test_scales_to_unit_range(self):
+        """Largest absolute value maps to 1.0 (or -1.0)."""
+        raw = {"a": 2.0, "b": -1.0, "c": 0.5}
+        normed = _normalize_affinity(raw)
+        assert normed["a"] == pytest.approx(1.0)
+        assert normed["b"] == pytest.approx(-0.5)
+        assert normed["c"] == pytest.approx(0.25)
+
+    def test_all_zeros(self):
+        """All-zero scores remain zero."""
+        raw = {"a": 0.0, "b": 0.0}
+        normed = _normalize_affinity(raw)
+        assert normed["a"] == pytest.approx(0.0)
+        assert normed["b"] == pytest.approx(0.0)
+
+    def test_all_negative(self):
+        """All-negative scores are normalized correctly."""
+        raw = {"a": -0.4, "b": -0.8}
+        normed = _normalize_affinity(raw)
+        assert normed["a"] == pytest.approx(-0.5)
+        assert normed["b"] == pytest.approx(-1.0)

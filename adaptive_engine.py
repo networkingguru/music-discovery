@@ -178,6 +178,20 @@ def generate_explanation(
     return "\n".join(lines)
 
 
+def _normalize_affinity(raw_scores: dict) -> dict:
+    """Symmetric normalization: maps scores to [-1, 1] preserving sign.
+
+    Uses max(abs(v)) as the divisor so negative scores are preserved,
+    not clamped to zero.
+    """
+    if not raw_scores:
+        return {}
+    max_abs = max(abs(v) for v in raw_scores.values())
+    if max_abs == 0:
+        return {k: 0.0 for k in raw_scores}
+    return {k: v / max_abs for k, v in raw_scores.items()}
+
+
 def rank_candidates(
     scores: dict,
     *,
@@ -470,13 +484,6 @@ def _run_seed(cache_dir: pathlib.Path, args):
     aff_mm = propagated.get("musicmap", {})
     aff_lfm = propagated.get("lastfm", {})
 
-    # Normalize affinity to [-1, 1] range
-    def _normalize_affinity(scores_dict):
-        if not scores_dict:
-            return {}
-        max_abs = max(abs(v) for v in scores_dict.values()) or 1.0
-        return {k: v / max_abs for k, v in scores_dict.items()}
-
     aff_mm_norm = _normalize_affinity(aff_mm)
     aff_lfm_norm = _normalize_affinity(aff_lfm)
 
@@ -546,9 +553,367 @@ def _run_seed(cache_dir: pathlib.Path, args):
 # ── Build and feedback stubs ─────────────────────────────────────────────────
 
 def _run_build(cache_dir: pathlib.Path, args):
-    """Build mode stub. Full implementation in Task 8."""
-    log.info("--build mode: Full implementation in Task 8.")
-    log.info("This will score all candidates and generate a playlist.")
+    """Build mode: score all candidates, build playlist, save snapshot for feedback."""
+    import math
+    from datetime import datetime, timezone
+
+    from music_discovery import (
+        load_dotenv,
+        parse_library_jxa,
+        collect_track_metadata_jxa,
+        load_cache,
+        fetch_filter_data,
+        fetch_top_tracks,
+        check_ai_artist,
+        load_ai_blocklist,
+        load_ai_allowlist,
+        load_user_blocklist,
+        load_blocklist,
+        _build_paths,
+    )
+    from signal_collectors import (
+        collect_playcounts_jxa,
+        collect_user_playlists_jxa,
+        collect_ratings_jxa,
+        collect_heavy_rotation,
+        collect_recommendations,
+        collect_lastfm_loved,
+        _make_user_session,
+    )
+    from signal_experiment import _add_track_to_named_playlist
+    from feedback import create_snapshot, save_snapshot
+
+    load_dotenv()
+
+    api_key = os.environ.get("LASTFM_API_KEY", "").strip()
+    lastfm_user = os.environ.get("LASTFM_USERNAME", "").strip() or None
+    if not api_key:
+        log.error("LASTFM_API_KEY not set in .env — cannot proceed.")
+        sys.exit(1)
+
+    paths = _build_paths()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Step 1: Load model and graph ─────────────────────────────────────────
+    log.info("Step 1: Loading model and graph...")
+
+    model_path = cache_dir / "weight_model.json"
+    graph_path = cache_dir / "affinity_graph.json"
+
+    if not model_path.exists():
+        log.error("No model found at %s. Run --seed first.", model_path)
+        sys.exit(1)
+
+    learner = WeightLearner.load(model_path)
+    graph = AffinityGraph.load(graph_path)
+    log.info("  Loaded model (%d signals) and graph.", len(learner.signal_names))
+
+    signal_names = learner.signal_names
+
+    # ── Step 2: Collect library signals ──────────────────────────────────────
+    log.info("Step 2: Collecting library signals...")
+
+    favorites = parse_library_jxa()
+    log.info("  %d favorited artists.", len(favorites))
+
+    playcounts = collect_playcounts_jxa()
+    log.info("  %d artists with plays.", len(playcounts))
+
+    playlists = collect_user_playlists_jxa()
+    log.info("  %d artists in playlists.", len(playlists))
+
+    ratings_raw = collect_ratings_jxa()
+    ratings = {a: d["avg_centered"] for a, d in ratings_raw.items()}
+    log.info("  %d artists with ratings.", len(ratings))
+
+    library_artists = (
+        set(favorites.keys()) | set(playcounts.keys())
+        | set(playlists.keys()) | set(ratings.keys())
+    )
+
+    seed_signals = {
+        "favorites": {a: float(v) for a, v in favorites.items()},
+        "playcount": {a: float(v) for a, v in playcounts.items()},
+        "playlists": {a: float(v) for a, v in playlists.items()},
+        "ratings": ratings,
+    }
+
+    # ── Step 3: Optional API signals ─────────────────────────────────────────
+    log.info("Step 3: Collecting optional API signals...")
+
+    heavy_rotation_artists: set = set()
+    recommendation_artists: set = set()
+    lastfm_loved_artists: set = set()
+
+    apple_dev_token = os.environ.get("APPLE_MUSIC_DEV_TOKEN", "").strip()
+    apple_user_token = os.environ.get("APPLE_MUSIC_USER_TOKEN", "").strip()
+    if apple_dev_token and apple_user_token:
+        try:
+            session = _make_user_session(apple_dev_token, apple_user_token)
+            heavy_rotation_artists = collect_heavy_rotation(session)
+            log.info("  %d heavy rotation artists.", len(heavy_rotation_artists))
+            recommendation_artists = collect_recommendations(session)
+            log.info("  %d recommendation artists.", len(recommendation_artists))
+        except Exception as exc:
+            log.warning("  Apple Music API failed: %s", exc)
+    else:
+        log.info("  Apple Music tokens not set — skipping heavy_rotation/recommendations.")
+
+    if lastfm_user:
+        try:
+            lastfm_loved_artists = collect_lastfm_loved(lastfm_user, api_key)
+            log.info("  %d Last.fm loved artists.", len(lastfm_loved_artists))
+        except Exception as exc:
+            log.warning("  Last.fm loved failed: %s", exc)
+
+    # ── Step 4: Load blocklist, overrides, feedback history ──────────────────
+    log.info("Step 4: Loading blocklist, overrides, feedback history...")
+
+    project_dir = pathlib.Path(__file__).parent
+    ai_blocklist = load_ai_blocklist(project_dir / "ai_blocklist.txt")
+    ai_allowlist = load_ai_allowlist(project_dir / "ai_allowlist.txt")
+    user_blocklist = load_user_blocklist(project_dir / "blocklist.txt")
+    file_blocklist = load_blocklist(paths["blocklist"])
+    full_blocklist = user_blocklist | file_blocklist | ai_blocklist
+
+    overrides = load_overrides(cache_dir / "artist_overrides.json")
+    history_rounds = load_feedback_history(cache_dir / "feedback_history.json")
+    current_round = len(history_rounds) + 1
+    log.info("  Round %d. %d history rounds, %d blocklisted.",
+             current_round, len(history_rounds), len(full_blocklist))
+
+    # ── Step 5: Inject into graph and propagate ──────────────────────────────
+    log.info("Step 5: Injecting signals and propagating graph...")
+
+    # Collect track metadata for dateAdded recency
+    track_metadata = collect_track_metadata_jxa()
+    # Build artist → earliest dateAdded mapping
+    now = datetime.now(timezone.utc)
+    artist_date_added: dict[str, float] = {}  # artist → days_ago
+    for track in track_metadata:
+        artist = (track.get("artist") or "").lower().strip()
+        date_str = track.get("dateAdded", "")
+        if not artist or not date_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            days_ago = max(0.0, (now - dt).total_seconds() / 86400)
+        except (ValueError, TypeError):
+            continue
+        # Use the earliest (smallest days_ago) for the artist
+        if artist not in artist_date_added or days_ago < artist_date_added[artist]:
+            artist_date_added[artist] = days_ago
+
+    graph.reset_injections()
+
+    # Inject library favorites with actual dateAdded recency
+    for artist, fav_count in favorites.items():
+        days_ago = artist_date_added.get(artist, 180.0)  # fallback to half-life
+        graph.inject_feedback(artist, fave_count=fav_count, days_ago=days_ago)
+
+    # Replay feedback history
+    for rnd in history_rounds:
+        round_id = rnd.get("round_id", "0")
+        try:
+            rnd_num = int(round_id)
+            rnd_days_ago = max(0.0, (current_round - rnd_num) * 14)  # ~2 weeks per round
+        except (ValueError, TypeError):
+            rnd_days_ago = 90.0
+
+        from affinity_graph import DISCOVERY_HALF_LIFE_DAYS
+        for artist, fb in rnd.get("artist_feedback", {}).items():
+            graph.inject_feedback(
+                artist,
+                fave_count=fb.get("fave_tracks", 0),
+                skip_count=fb.get("skip_tracks", 0),
+                listen_count=fb.get("listen_tracks", 0),
+                tracks_offered=fb.get("tracks_offered", 1),
+                days_ago=rnd_days_ago,
+                half_life_days=DISCOVERY_HALF_LIFE_DAYS,
+            )
+
+    propagated = graph.propagate()
+    aff_mm = propagated.get("musicmap", {})
+    aff_lfm = propagated.get("lastfm", {})
+
+    # ── Step 6: Normalize affinity (symmetric, preserving negatives) ─────────
+    aff_mm_norm = _normalize_affinity(aff_mm)
+    aff_lfm_norm = _normalize_affinity(aff_lfm)
+    log.info("  Propagated: %d musicmap scores, %d lastfm scores.",
+             len(aff_mm_norm), len(aff_lfm_norm))
+
+    # ── Step 7: Score all candidates ─────────────────────────────────────────
+    log.info("Step 6: Scoring candidates...")
+
+    scrape_cache = load_cache(paths["cache"])
+    filter_cache = load_cache(paths["filter_cache"])
+
+    all_candidates = set()
+    for artist, neighbors in scrape_cache.items():
+        all_candidates.update(n.lower() for n in neighbors.keys())
+    all_candidates -= library_artists
+
+    candidate_scores: dict = {}
+    candidate_features: dict = {}
+    candidate_details: dict = {}  # for explanation generation
+
+    for candidate in all_candidates:
+        if candidate in full_blocklist:
+            continue
+
+        # Build proximities
+        proximities = {}
+        for seed in library_artists:
+            seed_data = scrape_cache.get(seed, {})
+            prox = seed_data.get(candidate, 0.0)
+            if prox > 0:
+                proximities[seed] = {candidate: prox}
+
+        # Compute AI heuristic score
+        ai_score = 0.0
+        filter_entry = filter_cache.get(candidate, {})
+        if filter_entry:
+            blocked, reason = check_ai_artist(
+                candidate, filter_entry, ai_blocklist, ai_allowlist
+            )
+            if blocked:
+                continue
+            listeners = filter_entry.get("listeners", 0)
+            if listeners > 0:
+                ai_score = min(1.0, max(0.0, (math.log10(max(listeners, 1)) - 2) / 3))
+
+        direct = {
+            "heavy_rotation": 1.0 if candidate in heavy_rotation_artists else 0.0,
+            "recommendations": 1.0 if candidate in recommendation_artists else 0.0,
+            "lastfm_similar": 0.0,
+            "lastfm_loved": 1.0 if candidate in lastfm_loved_artists else 0.0,
+            "ai_heuristic": ai_score,
+        }
+
+        features = compute_candidate_features(
+            candidate=candidate,
+            seed_signals=seed_signals,
+            proximities=proximities,
+            direct_signals=direct,
+            signal_names=signal_names,
+        )
+
+        model_score = learner.predict_proba(features)
+        mm_aff = aff_mm_norm.get(candidate, 0.0)
+        lfm_aff = aff_lfm_norm.get(candidate, 0.0)
+        final = compute_final_score(model_score, mm_aff, lfm_aff, alpha=args.alpha)
+
+        candidate_scores[candidate] = final
+        candidate_features[candidate] = features
+        candidate_details[candidate] = {
+            "model_score": model_score,
+            "affinity_mm": mm_aff,
+            "affinity_lfm": lfm_aff,
+        }
+
+    log.info("  Scored %d candidates.", len(candidate_scores))
+
+    # ── Step 8: Rank and filter ──────────────────────────────────────────────
+    ranked = rank_candidates(
+        candidate_scores,
+        blocklist=full_blocklist,
+        overrides=overrides,
+        history_rounds=history_rounds,
+        current_round=current_round,
+    )
+
+    playlist_size = args.playlist_size
+    top_artists = ranked[:playlist_size]
+
+    log.info("\n  Top %d candidates:", len(top_artists))
+    log.info("  %-4s  %-40s  %s", "Rank", "Artist", "Score")
+    log.info("  %s", "-" * 55)
+    for i, (score, name) in enumerate(top_artists, 1):
+        log.info("  %-4d  %-40s  %.4f", i, name, score)
+
+    # ── Step 9: Build playlist ───────────────────────────────────────────────
+    log.info("\nStep 7: Building playlist...")
+
+    playlist_name = f"Adaptive Discovery R{current_round}"
+    offered_tracks: set = set()  # (artist, track_name) for snapshot
+    tracks_per_artist = DEFAULT_TRACKS_PER_ARTIST
+
+    for _score, artist in top_artists:
+        tracks = fetch_top_tracks(artist, api_key) if api_key else []
+        added_count = 0
+        for track in tracks[:tracks_per_artist + 1]:  # try one extra in case of failure
+            if added_count >= tracks_per_artist:
+                break
+            track_name = track.get("name", "")
+            if not track_name:
+                continue
+            if _add_track_to_named_playlist(artist, track_name, playlist_name):
+                offered_tracks.add((artist.lower(), track_name.lower()))
+                added_count += 1
+        if added_count > 0:
+            log.info("  Added %d tracks for %s", added_count, artist)
+        else:
+            log.warning("  No tracks added for %s", artist)
+        time.sleep(0.5)  # Rate limiting
+
+    log.info("  Playlist '%s': %d tracks for %d artists.",
+             playlist_name, len(offered_tracks), len(top_artists))
+
+    # ── Step 10: Save pre-listen snapshot ────────────────────────────────────
+    log.info("Step 8: Saving pre-listen snapshot...")
+
+    snapshot = create_snapshot(track_metadata, offered_tracks)
+    save_snapshot(cache_dir / "pre_listen_snapshot.json", snapshot)
+    log.info("  Saved snapshot with %d tracks.", len(snapshot))
+
+    # ── Step 11: Save offered features ───────────────────────────────────────
+    offered_artist_names = {name for _, name in top_artists}
+    offered_features = {}
+    for artist in offered_artist_names:
+        if artist in candidate_features:
+            offered_features[artist] = candidate_features[artist]
+
+    features_path = cache_dir / "offered_features.json"
+    with open(features_path, "w", encoding="utf-8") as fh:
+        json.dump({"round": current_round, "features": offered_features}, fh, indent=2)
+    log.info("  Saved features for %d artists to %s", len(offered_features), features_path)
+
+    # ── Step 12: Write explanation report ────────────────────────────────────
+    log.info("Step 9: Writing explanation report...")
+
+    explanation_lines = [
+        f"Adaptive Discovery — Round {current_round}",
+        f"Playlist: {playlist_name}",
+        f"Alpha: {args.alpha}",
+        f"Candidates scored: {len(candidate_scores)}",
+        f"Playlist size: {len(top_artists)} artists",
+        "",
+    ]
+
+    model_weights = learner._weights
+
+    for i, (score, artist) in enumerate(top_artists, 1):
+        details = candidate_details.get(artist, {})
+        features = candidate_features.get(artist, {})
+        explanation = generate_explanation(
+            artist=artist,
+            final_score=score,
+            model_score=details.get("model_score", 0.0),
+            affinity_mm=details.get("affinity_mm", 0.0),
+            affinity_lfm=details.get("affinity_lfm", 0.0),
+            feature_dict=features,
+            weights=model_weights,
+        )
+        explanation_lines.append(f"#{i}")
+        explanation_lines.append(explanation)
+        explanation_lines.append("")
+
+    explanation_path = cache_dir / "playlist_explanation.txt"
+    with open(explanation_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(explanation_lines))
+    log.info("  Saved explanation to %s", explanation_path)
+
+    log.info("\nBuild complete. Round %d playlist ready for listening.", current_round)
 
 
 def _run_feedback(cache_dir: pathlib.Path, args):
