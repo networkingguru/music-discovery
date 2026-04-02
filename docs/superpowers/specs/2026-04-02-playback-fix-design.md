@@ -174,9 +174,24 @@ In `adaptive_engine.py:_run_build()`, before the playlist-building loop:
 - **Corrupt JSON or wrong version:** Log warning, return empty set (do not crash)
 - **Atomic write:** Write to `offered_tracks.json.tmp`, then `os.replace()` to final path. This prevents corruption if the process crashes mid-write.
 
+### Deep track sourcing
+
+Currently `fetch_top_tracks()` returns only 2 tracks per artist from Last.fm's `artist.getTopTracks`. This shallow pool exhausts fast for favorited artists that reappear every round, and only surfaces well-known hits — never deep cuts.
+
+**New approach: tiered track sourcing.** For each artist, gather tracks in priority order:
+
+1. **Last.fm top tracks** (existing `fetch_top_tracks`, increase `limit` to 50) — most popular first
+2. **iTunes Search API catalog search** — `search_itunes` with just the artist name, `limit=200`, collecting all songs. This surfaces album tracks, B-sides, and deep cuts not in Last.fm's top tracks.
+
+Tracks from tier 1 are offered first (highest likelihood of being good). Tier 2 fills in after tier 1 is exhausted across rounds. Both tiers are subject to the cross-round dedup check.
+
+**New helper:** `fetch_artist_catalog(artist)` — calls the iTunes Search API with just the artist name, returns a list of `{"name": str, "artist": str}` for all songs. Deduplicates against the Last.fm list (by lowercased track name). This is a free API call (no key required), same as `search_itunes`.
+
+**Track selection per round:** Still offer `tracks_per_artist` (default 2) tracks per artist per round. But the pool to draw from is now 50+ instead of 2. The build loop iterates the combined list, skipping previously-offered tracks, until it has added `tracks_per_artist` or exhausted the pool.
+
 ### Exhausted artist overflow
 
-If all of an artist's top tracks have been previously offered, that artist contributes zero tracks. To prevent empty playlists as the engine converges, the build loop uses **overflow iteration** rather than a fixed slice of `top_artists`:
+If all of an artist's tracks (from both tiers) have been previously offered, that artist contributes zero tracks. To prevent empty playlists as the engine converges, the build loop uses **overflow iteration** rather than a fixed slice of `top_artists`:
 
 ```python
 artist_idx = 0
@@ -189,7 +204,7 @@ while slots_filled < target_artist_count and artist_idx < len(ranked):
         slots_filled += 1
 ```
 
-This continues past exhausted artists to fill the playlist from lower-ranked candidates. The exhausted artist is not blocklisted (that's search-failure only) and can still contribute if new tracks appear in their catalog.
+This continues past exhausted artists to fill the playlist from lower-ranked candidates. The exhausted artist is not blocklisted (that's search-failure only) and can still contribute if new tracks appear in their catalog. With the deep catalog sourcing, true exhaustion is rare — most artists have dozens of tracks available.
 
 ## 6. Auto-Blocklist on Search Strikes
 
@@ -205,7 +220,7 @@ A **strike counter** per artist, stored in `search_strikes.json`:
 {
   "version": 1,
   "strikes": {
-    "artist name": {"count": 2, "last_round": 3}
+    "artist name": {"count": 2, "last_round": 3, "last_recheck": 0}
   }
 }
 ```
@@ -238,7 +253,15 @@ This keeps strike logic in `_run_build()` where it belongs, with clean data flow
 
 ### Recovery path
 
-Auto-blocklisted artists can be manually removed from `ai_blocklist.txt` if they later become available on Apple Music. Additionally, every 10 rounds, `_run_build()` re-tests auto-blocklisted artists with a single `search_itunes()` call. If found, automatically remove from `ai_blocklist.txt` and log a notice. This prevents permanent false positives from transient catalog gaps.
+Auto-blocklisted artists can be manually removed from `ai_blocklist.txt`. For automatic recovery, use **on-demand re-checks with cooldown:**
+
+- During candidate filtering in `_run_build()`, when an auto-blocklisted artist scores high enough to be a candidate, check whether it's time to re-test.
+- `search_strikes.json` gains a `last_recheck` field per artist (default 0).
+- Only re-test if `current_round - last_recheck >= 10`. This prevents repeatedly hitting the API for persistently dead artists.
+- If the re-check finds the artist (`search_itunes` returns a result), remove from `ai_blocklist.txt` and log a notice. The artist re-enters the candidate pool immediately.
+- If the re-check still fails, update `last_recheck` to `current_round` and keep the artist blocklisted.
+
+**Cost:** At most one API call per blocklisted artist per 10 rounds, and only for artists the engine actually wants to use. Dead artists that fall out of the ranking cost nothing.
 
 ### File handling
 
@@ -260,7 +283,8 @@ INFO: Re-checked "Some Artist" — now available on Apple Music, removed from au
 | `music_discovery.py:_play_store_track()` | Poll `isPreparedToPlay` via NSRunLoop |
 | `music_discovery.py:add_track_to_playlist()` | Update to use `result.store_id` |
 | `signal_experiment.py:_add_track_to_named_playlist()` | Accept `SearchResult` param; library-first early-return path; error-handled AppleScript |
-| `adaptive_engine.py:_run_build()` | Call `search_itunes` before `_add_track_to_named_playlist`; overflow iteration; load/check/save offered tracks; strike counting; auto-blocklist; periodic re-check |
+| `music_discovery.py` (new helper) | `fetch_artist_catalog(artist)` — iTunes Search API catalog lookup for deep tracks |
+| `adaptive_engine.py:_run_build()` | Tiered track sourcing; call `search_itunes` before `_add_track_to_named_playlist`; overflow iteration; load/check/save offered tracks; strike counting; auto-blocklist; on-demand re-check with cooldown |
 | `adaptive_engine.py` (new helpers) | `_load_offered_tracks()`, `_save_offered_tracks()`, `_load_search_strikes()`, `_save_search_strikes()` |
 | `offered_tracks.json` (new data) | Persistent record of all tracks offered across rounds |
 | `search_strikes.json` (new data) | Per-artist consecutive-attempt failure counts |
@@ -281,7 +305,9 @@ INFO: Re-checked "Some Artist" — now available on Apple Music, removed from au
   - Gap between attempts (`last_round < current_round - 1`) → counter resets
   - Hit threshold 3 → artist appended to blocklist
   - Mixed results (some found, some error) → reset due to found track
+- **Deep track sourcing:** `fetch_artist_catalog` returns catalog tracks; combined list deduplicates against Last.fm top tracks; tier 1 offered before tier 2
 - **Overflow iteration:** When first N artists are exhausted, playlist fills from lower-ranked candidates
+- **On-demand re-check:** Blocklisted artist with `last_recheck` 10+ rounds ago triggers re-check; success removes from blocklist; failure updates `last_recheck`; recent recheck skips API call
 - **File handling:** Missing file → empty defaults; corrupt JSON → log + empty defaults; atomic write verifiable via temp file existence
 
 ### Integration tests
