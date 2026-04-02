@@ -88,8 +88,8 @@ Add fields to each artist's entry in `filter_cache.json`:
 - `"whitelisted_mb"` — MusicBrainz confirmed as Person/Group/Orchestra/Choir with substance
 
 **Cache behavior:**
-- Layer 1 (static blocklist) is always checked, ignoring cache. This ensures new blocklist additions take effect immediately.
-- Layers 2+3 use the cache. If `ai_check` is present, skip API calls.
+- Allowlist and static blocklist are checked before the cache (steps 1-2). This ensures new blocklist/allowlist additions take effect immediately regardless of cached state.
+- Cache is consulted at step 3. If `ai_check` is present and not expired, return the cached result without API calls.
 - `blocked_metadata` entries expire after 90 days (re-checked on next run). New artists may gain MusicBrainz/Last.fm presence over time.
 - `pass` and `whitelisted_mb` entries do not expire.
 
@@ -129,14 +129,17 @@ Add fields to each artist's entry in `filter_cache.json`:
 
 ## Thresholds
 
-| Check | Condition | Action |
-|-------|-----------|--------|
-| Allowlist | In `ai_allowlist.txt` | Pass (skip all checks) |
-| Static blocklist | In `ai_blocklist.txt` (case-insensitive, always checked) | Block |
-| MusicBrainz type | Person, Group, Orchestra, or Choir with ≥1 release/relationship | Pass (whitelist) |
-| Metadata heuristic | MB not found AND Last.fm listeners < 1,000 AND bio < 50 chars AND 0 tags | Block |
-| API failure | `fetch_filter_data()` returned `{}` | Pass (benefit of doubt) |
-| Default | None of the above triggered | Pass |
+Evaluation order (short-circuits at each step):
+
+| Step | Check | Condition | Action |
+|------|-------|-----------|--------|
+| 1 | Allowlist | In `ai_allowlist.txt` | Pass (skip all checks) |
+| 2 | Static blocklist | In `ai_blocklist.txt` (case-insensitive) | Block |
+| 3 | Cache | `ai_check` present and not expired | Return cached result |
+| 4 | MusicBrainz type | Person, Group, Orchestra, or Choir with ≥1 release/relationship | Pass (whitelist) |
+| 5 | Metadata heuristic | MB not found AND Last.fm listeners < 1,000 AND bio < 50 chars AND 0 tags | Block |
+| 6 | API failure | `fetch_filter_data()` returned `{}` | Pass (benefit of doubt) |
+| 7 | Default | None of the above triggered | Pass |
 
 ## Performance
 
