@@ -765,6 +765,45 @@ def test_fetch_filter_data_bio_strips_lastfm_boilerplate():
     assert result["bio_length"] == 0
 
 
+def test_fetch_filter_data_returns_similar_artists(monkeypatch):
+    """fetch_filter_data extracts similar artists from getInfo response."""
+    search_json = {"results": {"artistmatches": {"artist": [{"name": "Opeth"}]}}}
+    getinfo_json = {
+        "artist": {
+            "stats": {"listeners": "500000"},
+            "mbid": "",
+            "bio": {"content": "Swedish band"},
+            "tags": {"tag": [{"name": "metal"}]},
+            "similar": {
+                "artist": [
+                    {"name": "Katatonia", "match": "0.85"},
+                    {"name": "Porcupine Tree", "match": "0.72"},
+                ]
+            },
+        }
+    }
+
+    call_count = {"n": 0}
+    def mock_get(url, **kwargs):
+        call_count["n"] += 1
+        resp = type("R", (), {"status_code": 200})()
+        if call_count["n"] == 1:
+            resp.json = lambda: search_json
+        else:
+            resp.json = lambda: getinfo_json
+        return resp
+
+    monkeypatch.setattr("music_discovery.requests.get", mock_get)
+    monkeypatch.setattr("music_discovery.time.sleep", lambda x: None)
+
+    result = md.fetch_filter_data("opeth", "fake_key")
+    assert "similar_artists" in result
+    assert result["similar_artists"] == [
+        {"name": "Katatonia", "match": 0.85},
+        {"name": "Porcupine Tree", "match": 0.72},
+    ]
+
+
 def test_filter_candidates_removes_popular_classic():
     """Artist with >2M listeners and debut <= 2006 is excluded."""
     scored = [(10.0, "radiohead"), (5.0, "new artist")]

@@ -839,6 +839,16 @@ def fetch_filter_data(artist, api_key):
         bio_content = data.get("bio", {}).get("content", "")
         bio_length  = _clean_bio_length(bio_content)
         tag_count   = len(data.get("tags", {}).get("tag", []))
+        similar_raw = data.get("similar", {}).get("artist", [])
+        similar_artists = []
+        for s in similar_raw:
+            name = s.get("name", "").strip()
+            try:
+                match = float(s.get("match", 0))
+            except (ValueError, TypeError):
+                match = 0.0
+            if name:
+                similar_artists.append({"name": name, "match": match})
 
         # Step 3: get debut year and type from MusicBrainz
         debut_year = None
@@ -901,6 +911,7 @@ def fetch_filter_data(artist, api_key):
             "tag_count": tag_count,
             "mb_type": mb_type,
             "mb_has_releases": mb_has_releases,
+            "similar_artists": similar_artists,
         }
     except Exception as e:
         log.debug(f"fetch_filter_data failed for '{artist}': {e}")
