@@ -4,3 +4,4 @@ playwright
 python-dotenv
 pyjwt[crypto]
 cryptography
+scikit-learn
