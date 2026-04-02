@@ -12,6 +12,63 @@
 
 ---
 
+## MANDATORY Review Fixes
+
+The plan was reviewed by 4 expert reviewers (correctness, test quality, architecture, spec coverage). The following bugs and gaps MUST be addressed during implementation of the relevant task. The implementing subagent should treat these as hard requirements, not suggestions.
+
+### Per-Task Fixes
+
+**Task 2 (JXA track metadata):**
+- Use bulk JXA property access (`tracks.name()`, `tracks.skippedCount()`, etc.) instead of per-track iteration. Per-track access sends N Apple Events and will take minutes for a 10K+ track library. The existing collectors in `signal_collectors.py` show the bulk pattern.
+
+**Task 4 (feedback.py):**
+- Fix `test_create_snapshot_from_track_metadata` assertions to use lowercase keys: `("opeth", "ghost")` not `("opeth", "Ghost")` — `create_snapshot` lowercases both.
+- Fix `test_create_snapshot_filters_to_offered_only` assertion: `("tool", "other")` not `("tool", "Other")`.
+- `aggregate_artist_feedback` must accept and use `all_offered_tracks` (including unplayed tracks) for `tracks_offered` count. This is critical for skip attenuation — without it, offered-but-unplayed tracks aren't counted.
+- Add `save_snapshot`/`load_snapshot` roundtrip test.
+
+**Task 5 (affinity graph):**
+- Fix `inject_feedback` to accumulate injections (`+=`) — already done in the plan, but callers must `reset_injections()` at the start of each `--build` run to prevent unbounded accumulation across runs. Add a `reset_injections()` method.
+- Add assertion to `test_prune_removes_cold_nodes`: `assert "c" not in g.nodes`.
+- The spec says listen-no-fave propagation is limited to 2 hops, not 3. Add a `max_hops` parameter to `inject_feedback` or `propagate` that can be overridden for weak signals.
+- Separate propagation paths for music-map and Last.fm edges so they can be weighted independently: `propagate()` should return `{"musicmap": {artist: score}, "lastfm": {artist: score}}` or at minimum accept separate weight parameters.
+
+**Task 6 (weight learner):**
+- **Remove the sklearn load hack.** Do NOT fit a dummy model and overwrite coef_. Instead, implement `predict_proba` directly using the sigmoid formula: `1 / (1 + exp(-(bias + dot(weights, features))))`. Use sklearn only for `fit()`. The `load()` method just restores weights/bias and sets `_fitted=True`. This eliminates the fragile sklearn internal state dependency.
+- `WeightLearner.__init__` must accept `signal_names` dynamically. When Last.fm username is not configured, `lastfm_loved` must be excluded from the list entirely (not fed as zeros). The caller decides which signals to include.
+- Add test: `test_fit_bias_is_negative` — with ~1:9 class imbalance, the bias should be negative.
+- Add test: `test_predict_proba_range_of_inputs` for load/save roundtrip (not just one point).
+
+**Task 7 (adaptive engine, seed mode):**
+- **Fix bootstrap similarity lookup.** The ternary is backwards. Replace with simple correct logic: for each candidate, iterate seed artists and collect `{seed: scrape_cache[seed].get(candidate, 0.0)}` for seeds that have non-zero proximity. Never look up the candidate as a cache key.
+- **Fix `generate_apple_music_token()` call.** It requires 3 positional args: `(key_id, team_id, key_path)`. Read these from env vars (they're already used in `signal_experiment.py`). The silent `except Exception: pass` must at minimum log a warning so the user knows API signals are missing.
+- **Set `ai_heuristic_score=0.0`** (not 1.0) for all bootstrap examples. The spec explicitly says new signals are 0.0 for bootstrap. 1.0 means "definitely human" which biases training.
+- Wire `check_ai_artist()` to compute real ai_heuristic scores for seed mode candidates (where filter data is available).
+
+**Task 8 (--build mode):**
+- **Fix affinity normalization to preserve negative scores.** Do NOT clamp to `max(0, ...)`. Use symmetric normalization: `aff_max = max(abs(v) for v in affinity_scores.values())`, then `aff / aff_max` maps to [-1, 1]. The final_score formula handles negative affinity correctly.
+- **Reset graph injections** at the start of `_run_build` before injecting library favorites and replaying feedback history.
+- **Use actual `dateAdded`** from `collect_track_metadata_jxa()` for library recency instead of hardcoded `days_ago=90`.
+- **Fix `add_track_to_playlist` call.** The existing function hardcodes playlist name "Music Discovery". Either pass a playlist name parameter (may require modifying music_discovery.py) or use the existing `_add_track_to_named_playlist` from signal_experiment.py.
+- **Wire `generate_explanation()`** into the playlist explanation file — it exists and is tested but never called.
+- **Store raw features per artist** in `offered_features.json` (already added to plan) AND copy them into the feedback round's `raw_features` field during `--feedback`.
+- **Compute real `ai_heuristic_score`** via `check_ai_artist()` for candidates where filter data exists.
+- **Collect Last.fm similar data** for new candidates lazily during build (via a dedicated Last.fm-only call, not the full `fetch_filter_data` which adds unnecessary MusicBrainz calls).
+
+**Task 9 (--feedback mode):**
+- **Pass `all_offered_tracks`** (from snapshot keys) to `aggregate_artist_feedback`.
+- **Copy raw features** from `offered_features.json` into the feedback round's `raw_features` dict so model retraining has access to feature vectors.
+- **Diff library-wide favorites** (compare current `parse_library_jxa()` with a stored library snapshot) to detect new favorites on non-discovery artists. Inject these into the affinity graph.
+- **Process expunged feedback** from `artist_overrides.json`: skip expunged artist/round combinations when replaying feedback into the graph, and exclude them from model training data.
+
+**Task 10 (integration test):**
+- **Pass real feature dicts** (not `raw_features={}`) into `_collect_feedback_round`. Without this, the model refit loop is a no-op and the core adaptive behavior is untested.
+- **Add round 2 and 3** to match the spec's 3-round simulation requirement. Round 3 should introduce a jazz cluster to verify the model adapts to a second taste dimension.
+- **Verify model weights shift** after refitting (assert the weight for the predictive signal increased).
+- **Add pagination test** for `collect_lastfm_loved` (multi-page response).
+
+---
+
 ## File Map
 
 | File | Action | Responsibility |
@@ -2275,14 +2332,9 @@ git commit -m "test: add multi-round integration tests for adaptive engine"
 
 These are polish items that build on the working core without changing any interfaces.
 
-**Known spec gaps to address during implementation (not blocking):**
-- Library-wide passive feedback (new favorites between rounds outside discovery playlist)
-- Listen-no-fave propagation limited to 2 hops (currently uses uniform MAX_HOPS=3)
+**Deferred (acceptable for v1, not blocking):**
 - Cooldown early breakout via strong affinity score
 - Cooldown 30-day time limit (currently only counts rounds)
-- `ai_heuristic` score computed from `check_ai_artist()` instead of hardcoded 1.0
-- `lastfm_loved` conditionally excluded from feature vector when username not configured
-- Schema version checking on load
-- Expunged feedback processing (pins work, expunges don't yet)
+- Schema version checking on load (version field is written, check is deferred)
 - `collect_lastfm_similar()` extracted as reusable function in signal_collectors.py
-- Library recency using actual `dateAdded` from JXA instead of fixed approximation
+- `--rescan` logic beyond using the round_id string
