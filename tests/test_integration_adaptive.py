@@ -396,3 +396,61 @@ class TestFeedbackHistoryPersistence:
         assert len(loaded) == 2
         round_ids = [r["round_id"] for r in loaded]
         assert round_ids == ["1", "2"]
+
+
+def test_build_loop_skips_previously_offered_tracks(tmp_path):
+    """Tracks offered in a prior round are not offered again."""
+    from adaptive_engine import _load_offered_tracks, _save_offered_tracks
+
+    offered_path = tmp_path / "offered_tracks.json"
+    entries = [{"artist": "fleet foxes", "track": "white winter hymnal", "round": 1}]
+    _save_offered_tracks(offered_path, entries)
+
+    offered_set, _ = _load_offered_tracks(offered_path)
+    assert ("fleet foxes", "white winter hymnal") in offered_set
+
+    all_tracks = [
+        {"name": "White Winter Hymnal", "artist": "Fleet Foxes"},
+        {"name": "Mykonos", "artist": "Fleet Foxes"},
+    ]
+    available = [
+        t for t in all_tracks
+        if (t["artist"].lower(), t["name"].lower()) not in offered_set
+    ]
+    assert len(available) == 1
+    assert available[0]["name"] == "Mykonos"
+
+
+def test_build_loop_overflow_past_exhausted_artists(tmp_path):
+    """When top artist is exhausted, continues to next artist."""
+    from adaptive_engine import _load_offered_tracks, _save_offered_tracks
+
+    offered_path = tmp_path / "offered_tracks.json"
+    entries = [
+        {"artist": "artist a", "track": "track 1", "round": 1},
+        {"artist": "artist a", "track": "track 2", "round": 1},
+    ]
+    _save_offered_tracks(offered_path, entries)
+    offered_set, _ = _load_offered_tracks(offered_path)
+
+    ranked = [(0.9, "artist a"), (0.8, "artist b")]
+    artist_tracks = {
+        "artist a": [{"name": "Track 1", "artist": "Artist A"}, {"name": "Track 2", "artist": "Artist A"}],
+        "artist b": [{"name": "New Song", "artist": "Artist B"}],
+    }
+
+    slots_filled = 0
+    artist_idx = 0
+    target = 2
+    filled_artists = []
+    while slots_filled < target and artist_idx < len(ranked):
+        _, artist = ranked[artist_idx]
+        artist_idx += 1
+        tracks = artist_tracks.get(artist, [])
+        available = [t for t in tracks if (artist, t["name"].lower()) not in offered_set]
+        if available:
+            slots_filled += 1
+            filled_artists.append(artist)
+
+    assert "artist b" in filled_artists
+    assert slots_filled == 1

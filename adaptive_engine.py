@@ -712,6 +712,8 @@ def _run_build(cache_dir: pathlib.Path, args):
         load_cache,
         fetch_filter_data,
         fetch_top_tracks,
+        fetch_artist_catalog,
+        search_itunes,
         check_ai_artist,
         load_ai_blocklist,
         load_ai_allowlist,
@@ -972,7 +974,7 @@ def _run_build(cache_dir: pathlib.Path, args):
     )
 
     playlist_size = args.playlist_size
-    top_artists = ranked[:playlist_size]
+    top_artists = ranked[:playlist_size]  # preserve for explanation report below
 
     log.info("\n  Top %d candidates:", len(top_artists))
     log.info("  %-4s  %-40s  %s", "Rank", "Artist", "Score")
@@ -984,29 +986,106 @@ def _run_build(cache_dir: pathlib.Path, args):
     log.info("\nStep 7: Building playlist...")
 
     playlist_name = f"Adaptive Discovery R{current_round}"
-    offered_tracks: set = set()  # (artist, track_name) for snapshot
     tracks_per_artist = DEFAULT_TRACKS_PER_ARTIST
 
-    for _score, artist in top_artists:
-        tracks = fetch_top_tracks(artist, api_key) if api_key else []
+    # Load cross-round state
+    offered_path = cache_dir / "offered_tracks.json"
+    strikes_path = cache_dir / "search_strikes.json"
+    offered_set, offered_entries = _load_offered_tracks(offered_path)
+    strikes = _load_search_strikes(strikes_path)
+    project_dir = pathlib.Path(__file__).parent
+    blocklist_path = project_dir / "ai_blocklist.txt"
+
+    offered_tracks: set = set()  # (artist, track_name) for this round's snapshot
+    artist_idx = 0
+    slots_filled = 0
+
+    while slots_filled < playlist_size and artist_idx < len(ranked):
+        _score, artist = ranked[artist_idx]
+        artist_idx += 1
+
+        # On-demand re-check for auto-blocklisted artists
+        if artist.lower() in full_blocklist:
+            if _should_recheck_artist(strikes, artist.lower(), current_round):
+                catalog = fetch_artist_catalog(artist)
+                strikes.setdefault(artist.lower(), {"count": 3, "last_round": 0, "last_recheck": 0})
+                if catalog:
+                    _remove_from_blocklist(blocklist_path, artist)
+                    full_blocklist.discard(artist.lower())
+                    log.info("  Re-check passed for %s, re-entering candidate pool", artist)
+                else:
+                    strikes[artist.lower()]["last_recheck"] = current_round
+                    continue
+            else:
+                continue
+
+        # Tiered track sourcing: Last.fm top 50 first, then iTunes catalog
+        lastfm_tracks = fetch_top_tracks(artist, api_key, limit=50) if api_key else []
+        catalog_tracks = fetch_artist_catalog(artist)
+
+        # Deduplicate catalog against Last.fm (by lowercased track name)
+        lastfm_names = {t["name"].lower() for t in lastfm_tracks}
+        unique_catalog = [t for t in catalog_tracks if t["name"].lower() not in lastfm_names]
+
+        all_tracks = lastfm_tracks + unique_catalog
+        artist_search_results = []
         added_count = 0
-        for track in tracks[:tracks_per_artist + 1]:  # try one extra in case of failure
+
+        for track in all_tracks:
             if added_count >= tracks_per_artist:
                 break
             track_name = track.get("name", "")
             if not track_name:
                 continue
-            if _add_track_to_named_playlist(artist, track_name, playlist_name):
-                offered_tracks.add((artist.lower(), track_name.lower()))
+
+            # Cross-round dedup
+            key = (artist.lower(), track_name.lower())
+            if key in offered_set:
+                continue
+
+            # Search iTunes
+            result = search_itunes(artist, track_name)
+            artist_search_results.append(result)
+
+            if not result:
+                continue
+
+            # Try to add to playlist
+            if _add_track_to_named_playlist(artist, track_name, playlist_name,
+                                             search_result=result):
+                offered_tracks.add(key)
+                offered_set.add(key)
+                offered_entries.append({
+                    "artist": artist.lower(),
+                    "track": track_name.lower(),
+                    "round": current_round,
+                })
                 added_count += 1
+
+            time.sleep(0.3)  # Rate limiting
+
+        # Evaluate strikes for this artist
+        if artist_search_results:
+            should_block = _evaluate_artist_strikes(
+                strikes, artist.lower(), artist_search_results, current_round
+            )
+            if should_block:
+                _auto_blocklist_artist(blocklist_path, artist, current_round)
+
         if added_count > 0:
             log.info("  Added %d tracks for %s", added_count, artist)
+            slots_filled += 1
         else:
             log.warning("  No tracks added for %s", artist)
-        time.sleep(0.5)  # Rate limiting
 
-    log.info("  Playlist '%s': %d tracks for %d artists.",
-             playlist_name, len(offered_tracks), len(top_artists))
+        time.sleep(0.5)  # Rate limiting between artists
+
+    # Save cross-round state
+    _save_offered_tracks(offered_path, offered_entries)
+    _save_search_strikes(strikes_path, strikes)
+
+    log.info("  Playlist '%s': %d tracks for %d artists (of %d ranked).",
+             playlist_name, len(offered_tracks), slots_filled, len(ranked))
 
     # ── Step 10: Save pre-listen snapshot ────────────────────────────────────
     log.info("Step 8: Saving pre-listen snapshot...")
@@ -1016,11 +1095,15 @@ def _run_build(cache_dir: pathlib.Path, args):
     log.info("  Saved snapshot with %d tracks.", len(snapshot))
 
     # ── Step 11: Save offered features ───────────────────────────────────────
-    offered_artist_names = {name for _, name in top_artists}
+    # offered_tracks contains lowercased keys, but candidate_features uses
+    # original casing. Build a lowercase->original mapping from ranked.
+    lower_to_original = {name.lower(): name for _, name in ranked}
+    offered_artist_names = {a for a, _ in offered_tracks}
     offered_features = {}
-    for artist in offered_artist_names:
-        if artist in candidate_features:
-            offered_features[artist] = candidate_features[artist]
+    for artist_lower in offered_artist_names:
+        original = lower_to_original.get(artist_lower, artist_lower)
+        if original in candidate_features:
+            offered_features[original] = candidate_features[original]
 
     features_path = cache_dir / "offered_features.json"
     with open(features_path, "w", encoding="utf-8") as fh:
