@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 from adaptive_engine import (
     DEFAULT_ALPHA,
     DEFAULT_COOLDOWN_ROUNDS,
+    _collect_feedback_round,
     _normalize_affinity,
     apply_overrides,
     check_cooldown,
@@ -295,3 +296,80 @@ class TestNormalizeAffinity:
         normed = _normalize_affinity(raw)
         assert normed["a"] == pytest.approx(-0.5)
         assert normed["b"] == pytest.approx(-1.0)
+
+
+# ── _collect_feedback_round ─────────────────────────────────────────────────
+
+
+class TestCollectFeedbackRound:
+    def test_processes_diffs_and_attaches_features(self):
+        """_collect_feedback_round processes diffs and attaches features."""
+        before = {
+            ("opeth", "ghost"): {"played": 10, "skipped": 1, "favorited": False},
+            ("tool", "sober"): {"played": 5, "skipped": 0, "favorited": False},
+            ("korn", "blind"): {"played": 0, "skipped": 0, "favorited": False},
+        }
+        after = {
+            ("opeth", "ghost"): {"played": 12, "skipped": 1, "favorited": True},
+            ("tool", "sober"): {"played": 5, "skipped": 2, "favorited": False},
+            ("korn", "blind"): {"played": 0, "skipped": 0, "favorited": False},
+        }
+        features = {
+            "opeth": {"favorites": 55.0, "playcount": 1050.0},
+            "tool": {"favorites": 30.0, "playcount": 500.0},
+            "korn": {"favorites": 10.0, "playcount": 200.0},
+        }
+        all_offered = list(before.keys())
+
+        result = _collect_feedback_round("2026-04-02", before, after, features, all_offered)
+        assert result.round_id == "2026-04-02"
+        assert result.artist_feedback["opeth"]["fave_tracks"] == 1
+        assert result.artist_feedback["tool"]["skip_tracks"] == 1  # one track skipped
+        # korn had no activity but IS in artist_feedback because aggregate_artist_feedback
+        # includes all offered artists when all_offered_tracks is provided
+        assert result.artist_feedback["korn"]["fave_tracks"] == 0
+        assert result.artist_feedback["korn"]["skip_tracks"] == 0
+        assert result.raw_features["opeth"]["favorites"] == 55.0
+        assert result.raw_features["tool"]["favorites"] == 30.0
+        # korn IS in raw_features because it's in artist_feedback (offered)
+        assert result.raw_features["korn"]["favorites"] == 10.0
+
+    def test_missing_features_excluded(self):
+        """Artists without features in raw_features are not in round features."""
+        before = {
+            ("opeth", "ghost"): {"played": 10, "skipped": 1, "favorited": False},
+        }
+        after = {
+            ("opeth", "ghost"): {"played": 12, "skipped": 1, "favorited": True},
+        }
+        # No features for opeth
+        features = {}
+        all_offered = list(before.keys())
+
+        result = _collect_feedback_round("2026-04-02", before, after, features, all_offered)
+        assert result.artist_feedback["opeth"]["fave_tracks"] == 1
+        assert "opeth" not in result.raw_features
+
+    def test_no_changes_still_records_offered(self):
+        """When no tracks change, offered artists are still recorded via all_offered_tracks."""
+        before = {
+            ("tool", "sober"): {"played": 5, "skipped": 0, "favorited": False},
+        }
+        after = {
+            ("tool", "sober"): {"played": 5, "skipped": 0, "favorited": False},
+        }
+        features = {"tool": {"favorites": 30.0}}
+        all_offered = list(before.keys())
+
+        result = _collect_feedback_round("2026-04-02", before, after, features, all_offered)
+        # tool offered but no activity — still in artist_feedback with zero counts
+        assert "tool" in result.artist_feedback
+        assert result.artist_feedback["tool"]["tracks_offered"] == 1
+        assert result.artist_feedback["tool"]["fave_tracks"] == 0
+
+    def test_round_id_preserved(self):
+        """Round ID is passed through to the FeedbackRound."""
+        before = {("a", "b"): {"played": 0, "skipped": 0, "favorited": False}}
+        after = {("a", "b"): {"played": 1, "skipped": 0, "favorited": False}}
+        result = _collect_feedback_round("round-42", before, after, {}, list(before.keys()))
+        assert result.round_id == "round-42"

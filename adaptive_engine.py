@@ -916,10 +916,235 @@ def _run_build(cache_dir: pathlib.Path, args):
     log.info("\nBuild complete. Round %d playlist ready for listening.", current_round)
 
 
+def _collect_feedback_round(round_id, before_snapshot, after_snapshot,
+                            raw_features, all_offered_tracks):
+    """Process snapshot diffs into a FeedbackRound.
+
+    Args:
+        round_id: Identifier for this feedback round (e.g. date string).
+        before_snapshot: Pre-listen snapshot dict.
+        after_snapshot: Post-listen snapshot dict.
+        raw_features: {artist: {signal: value}} feature vectors from build phase.
+        all_offered_tracks: List of (artist, track) tuples offered this session.
+
+    Returns:
+        FeedbackRound with artist_feedback and raw_features for artists with feedback.
+    """
+    from feedback import diff_snapshot, aggregate_artist_feedback, FeedbackRound
+
+    diffs = diff_snapshot(before_snapshot, after_snapshot)
+    artist_feedback = aggregate_artist_feedback(diffs, all_offered_tracks)
+    # Only include features for artists that had feedback
+    round_features = {}
+    for artist in artist_feedback:
+        if artist in raw_features:
+            round_features[artist] = raw_features[artist]
+    return FeedbackRound(
+        round_id=round_id,
+        artist_feedback=artist_feedback,
+        raw_features=round_features,
+    )
+
+
 def _run_feedback(cache_dir: pathlib.Path, args):
-    """Feedback mode stub. Full implementation in Task 9."""
-    log.info("--feedback mode: Full implementation in Task 9.")
-    log.info("This will process listening feedback and update the model.")
+    """Feedback mode: collect listening feedback, update graph, refit model."""
+    from datetime import datetime, timezone
+
+    from music_discovery import parse_library_jxa, collect_track_metadata_jxa
+    from feedback import (
+        load_snapshot, create_snapshot, save_snapshot,
+        diff_snapshot, aggregate_artist_feedback, FeedbackRound,
+        load_feedback_history, save_feedback_history,
+    )
+    from affinity_graph import AffinityGraph, DISCOVERY_HALF_LIFE_DAYS, LIBRARY_HALF_LIFE_DAYS
+
+    log.info("=== Feedback Mode ===")
+
+    # ── 1. Load pre-listen snapshot ──────────────────────────────────────────
+    snapshot_path = cache_dir / "pre_listen_snapshot.json"
+    before_snapshot = load_snapshot(snapshot_path)
+    if not before_snapshot:
+        log.error("No pre-listen snapshot found at %s. Run --build first.", snapshot_path)
+        return
+    log.info("Loaded pre-listen snapshot: %d tracks.", len(before_snapshot))
+
+    # ── 2. Collect current track metadata ────────────────────────────────────
+    log.info("Collecting current track metadata from Apple Music...")
+    track_metadata = collect_track_metadata_jxa()
+    log.info("  Got %d tracks.", len(track_metadata))
+
+    # ── 3. Build "after" snapshot scoped to offered tracks ───────────────────
+    offered_keys = set(before_snapshot.keys())
+    after_snapshot = create_snapshot(track_metadata, offered_keys)
+    log.info("  After snapshot: %d tracks matched.", len(after_snapshot))
+
+    # ── 4–5. Diff and aggregate ──────────────────────────────────────────────
+    all_offered_tracks = list(before_snapshot.keys())
+
+    # ── 6. Load raw features ─────────────────────────────────────────────────
+    features_path = cache_dir / "offered_features.json"
+    raw_features: dict = {}
+    if features_path.exists():
+        with open(features_path, encoding="utf-8") as fh:
+            features_payload = json.load(fh)
+        raw_features = features_payload.get("features", {})
+    log.info("  Loaded features for %d artists.", len(raw_features))
+
+    # ── 7. Determine round_id ────────────────────────────────────────────────
+    round_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if getattr(args, "rescan", False):
+        # rescan flag can optionally carry a date; if just True, use today
+        round_id = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    feedback_round = _collect_feedback_round(
+        round_id, before_snapshot, after_snapshot, raw_features, all_offered_tracks
+    )
+
+    # ── 8. Save to feedback history (idempotent) ─────────────────────────────
+    history_path = cache_dir / "feedback_history.json"
+    history = load_feedback_history(history_path)
+    history = save_feedback_history(history_path, history, feedback_round)
+    log.info("  Saved feedback round '%s' (%d rounds total).", round_id, len(history))
+
+    # ── 9. Log summary ───────────────────────────────────────────────────────
+    for artist, fb in sorted(feedback_round.artist_feedback.items()):
+        faves = fb.get("fave_tracks", 0)
+        skips = fb.get("skip_tracks", 0)
+        listens = fb.get("listen_tracks", 0)
+        offered = fb.get("tracks_offered", 0)
+        log.info("  %s: %d fav, %d skip, %d listen (of %d offered)",
+                 artist, faves, skips, listens, offered)
+
+    # ── 10. Update affinity graph ────────────────────────────────────────────
+    log.info("Updating affinity graph...")
+    overrides = load_overrides(cache_dir / "artist_overrides.json")
+    expunged = set()
+    for entry in overrides.get("expunged_feedback", []):
+        # Entries are "round_id:artist" strings
+        if isinstance(entry, str) and ":" in entry:
+            expunged.add(entry)
+
+    graph = AffinityGraph.load(cache_dir / "affinity_graph.json")
+    graph.reset_injections()
+
+    # Inject library favorites
+    favorites = parse_library_jxa()
+    for artist, fav_count in favorites.items():
+        graph.inject_feedback(artist, fave_count=fav_count, days_ago=0.0,
+                              half_life_days=LIBRARY_HALF_LIFE_DAYS)
+
+    # Replay ALL feedback rounds, skipping expunged entries
+    current_round = len(history)
+    for rnd_idx, rnd in enumerate(history):
+        rnd_id = rnd.get("round_id", "0")
+        try:
+            rnd_num = int(rnd_id)
+            rnd_days_ago = max(0.0, (current_round - rnd_num) * 14)
+        except (ValueError, TypeError):
+            # Date-based round IDs: compute days from today
+            try:
+                rnd_date = datetime.fromisoformat(rnd_id).replace(
+                    tzinfo=timezone.utc
+                )
+                rnd_days_ago = max(
+                    0.0,
+                    (datetime.now(timezone.utc) - rnd_date).total_seconds() / 86400,
+                )
+            except (ValueError, TypeError):
+                rnd_days_ago = 90.0
+
+        for artist, fb in rnd.get("artist_feedback", {}).items():
+            expunge_key = f"{rnd_id}:{artist}"
+            if expunge_key in expunged:
+                log.debug("  Skipping expunged: %s", expunge_key)
+                continue
+            graph.inject_feedback(
+                artist,
+                fave_count=fb.get("fave_tracks", 0),
+                skip_count=fb.get("skip_tracks", 0),
+                listen_count=fb.get("listen_tracks", 0),
+                tracks_offered=fb.get("tracks_offered", 1),
+                days_ago=rnd_days_ago,
+                half_life_days=DISCOVERY_HALF_LIFE_DAYS,
+            )
+
+    graph.propagate()
+    graph.prune()
+    graph.save(cache_dir / "affinity_graph.json")
+    log.info("  Affinity graph updated and saved.")
+
+    # ── 11. Refit model on ALL accumulated training data ─────────────────────
+    log.info("Refitting model on accumulated feedback...")
+    all_features = []
+    all_labels = []
+
+    for rnd in history:
+        rnd_id = rnd.get("round_id", "0")
+        rnd_features = rnd.get("raw_features", {})
+        for artist, fb in rnd.get("artist_feedback", {}).items():
+            expunge_key = f"{rnd_id}:{artist}"
+            if expunge_key in expunged:
+                continue
+            if artist not in rnd_features or not rnd_features[artist]:
+                continue
+            all_features.append(rnd_features[artist])
+            label = 1 if fb.get("fave_tracks", 0) > 0 else 0
+            all_labels.append(label)
+
+    if all_features:
+        learner_path = cache_dir / "model_weights.json"
+        try:
+            learner = WeightLearner.load(learner_path)
+        except (FileNotFoundError, ValueError):
+            learner = WeightLearner()
+        learner.fit(all_features, all_labels)
+        learner.save(learner_path)
+        log.info("  Model refit on %d examples (%d positive, %d negative).",
+                 len(all_labels), sum(all_labels), len(all_labels) - sum(all_labels))
+    else:
+        log.info("  No training data available — model not updated.")
+
+    # ── 12. Diff library-wide favorites ──────────────────────────────────────
+    log.info("Checking for new library-wide favorites...")
+    lib_faves_path = cache_dir / "library_faves_snapshot.json"
+    old_lib_faves: dict = {}
+    if lib_faves_path.exists():
+        with open(lib_faves_path, encoding="utf-8") as fh:
+            old_lib_faves = json.load(fh)
+
+    current_lib_faves = favorites  # already collected above
+    # Detect new favorites (artists with higher counts, or newly appeared)
+    discovery_artists = set()
+    for rnd in history:
+        discovery_artists.update(rnd.get("artist_feedback", {}).keys())
+
+    new_lib_faves_injected = 0
+    for artist, count in current_lib_faves.items():
+        old_count = old_lib_faves.get(artist, 0)
+        if count > old_count and artist not in discovery_artists:
+            delta = count - old_count
+            graph.inject_feedback(
+                artist, fave_count=delta, days_ago=0.0,
+                half_life_days=LIBRARY_HALF_LIFE_DAYS,
+            )
+            new_lib_faves_injected += 1
+
+    if new_lib_faves_injected > 0:
+        graph.propagate()
+        graph.save(cache_dir / "affinity_graph.json")
+        log.info("  Injected %d new library favorites into graph.", new_lib_faves_injected)
+    else:
+        log.info("  No new library favorites detected.")
+
+    # Save current library faves snapshot
+    with open(lib_faves_path, "w", encoding="utf-8") as fh:
+        json.dump(current_lib_faves, fh, indent=2)
+
+    # ── 13. Replace pre-listen snapshot with current state ───────────────────
+    save_snapshot(snapshot_path, after_snapshot)
+    log.info("  Updated pre-listen snapshot with current state.")
+
+    log.info("\nFeedback processing complete.")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
