@@ -420,25 +420,57 @@ end tell
     return True
 
 
-def _add_track_to_named_playlist(artist, track_name, playlist_name):
+def _add_track_to_named_playlist(artist, track_name, playlist_name, *, search_result=None):
     """Search Apple Music for a track and add it to a named playlist.
+
+    If search_result is provided, uses it directly (skips search_itunes call).
+    Tries library-first path (fast, no JXA) before falling back to JXA playback.
     Returns True if added, False if not found."""
     from music_discovery import (
-        search_itunes, SearchResult, _run_applescript, _run_jxa, _play_store_track,
-        _applescript_escape,
+        search_itunes, _run_applescript, _run_jxa, _play_store_track,
+        _applescript_escape, SearchResult,
     )
     import time
 
-    safe_pl = playlist_name.replace('"', '\\"')
+    safe_pl = _applescript_escape(playlist_name)
     safe_artist = _applescript_escape(artist)
     safe_track = _applescript_escape(track_name)
 
-    result = search_itunes(artist, track_name)
-    if not result:
+    # Get search result (caller may have already searched)
+    if search_result is None:
+        search_result = search_itunes(artist, track_name)
+    if not search_result:
         log.info(f"  Not found: {artist} — {track_name}")
         return False
 
-    # Snapshot current track
+    # Use canonical names from API for better library matching
+    canon_artist = search_result.canonical_artist or artist
+    canon_track = search_result.canonical_track or track_name
+    safe_canon_artist = _applescript_escape(canon_artist)
+    safe_canon_track = _applescript_escape(canon_track)
+
+    # ── Library-first path: try to find and add directly ────────────────
+    lib_search_script = f'''
+tell application "Music"
+    try
+        set sr to search library playlist 1 for "{safe_canon_artist}"
+        repeat with t in sr
+            if name of t is "{safe_canon_track}" and artist of t is "{safe_canon_artist}" then
+                duplicate t to user playlist "{safe_pl}"
+                return "ok"
+            end if
+        end repeat
+        return "not_in_library"
+    on error e
+        return "error: " & e
+    end try
+end tell
+'''
+    lib_out, _ = _run_applescript(lib_search_script)
+    if lib_out.startswith("ok"):
+        return True
+
+    # ── JXA fallback: play via MediaPlayer, then add ────────────────────
     snapshot_script = '''
 tell application "Music"
     try
@@ -451,10 +483,8 @@ end tell
 '''
     prev_track, _ = _run_applescript(snapshot_script)
 
-    # Play via MediaPlayer
-    _play_store_track(result.store_id)
+    _play_store_track(search_result.store_id)
 
-    # Poll until current track changes
     poll_script = '''
 tell application "Music"
     try
@@ -473,7 +503,6 @@ end tell
     else:
         return False
 
-    # Get current track info
     info_script = '''
 tell application "Music"
     try
@@ -491,8 +520,6 @@ end tell
     safe_ct_name = _applescript_escape(ct_name)
     safe_ct_artist = _applescript_escape(ct_artist)
 
-    # Try to find in library and add to playlist
-    # Search by artist (more specific than short track names like "Love I")
     lib_script = f'''
 tell application "Music"
     try
@@ -513,7 +540,6 @@ end tell
     if out.startswith("ok"):
         return True
 
-    # Not in library — add it first
     add_lib_script = '''
 tell application "Music"
     try
@@ -529,7 +555,6 @@ end tell
     if not lib_out.startswith("lib_ok"):
         return False
 
-    # Poll until in library, then add to playlist
     playlist_script = f'''
 tell application "Music"
     try

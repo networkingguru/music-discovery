@@ -426,3 +426,123 @@ def test_post_listen_scoring():
     assert results[0]["precision"] == 20.0
     assert results[1]["name"] == "Config B"
     assert results[1]["hits"] == 2
+
+
+# --- Task 3: Library-first path in _add_track_to_named_playlist ---
+
+import sys
+import pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+
+import signal_experiment as se
+import music_discovery as md
+
+
+def test_library_first_path_adds_directly(monkeypatch):
+    """When track is in library, adds to playlist without JXA."""
+    search_result = md.SearchResult("12345", True, "Fleet Foxes", "White Winter Hymnal")
+    jxa_called = {"called": False}
+
+    def fake_applescript(script):
+        if "search library" in script:
+            return "ok", 0
+        return "", 0
+    def fake_play_store(*a):
+        jxa_called["called"] = True
+
+    monkeypatch.setattr(md, "_run_applescript", fake_applescript)
+    monkeypatch.setattr(md, "_play_store_track", fake_play_store)
+    result = se._add_track_to_named_playlist(
+        "Fleet Foxes", "White Winter Hymnal", "Test Playlist",
+        search_result=search_result,
+    )
+    assert result is True
+    assert jxa_called["called"] is False
+
+
+def test_library_first_falls_through_to_jxa(monkeypatch):
+    """When track is not in library, falls through to JXA path."""
+    search_result = md.SearchResult("12345", True, "New Artist", "New Track")
+    jxa_called = {"called": False}
+
+    def fake_applescript(script):
+        """Stateful mock that handles different AppleScript contexts."""
+        if "search library" in script and "duplicate" in script:
+            if not jxa_called["called"]:
+                return "not_in_library", 0
+            return "ok", 0
+        if "current track" in script:
+            if not jxa_called["called"]:
+                return "", 0
+            return "New Track|||New Artist", 0
+        if "duplicate" in script and "source" in script:
+            return "lib_ok", 0
+        return "", 0
+
+    def fake_play_store(sid):
+        jxa_called["called"] = True
+        return "1"
+
+    monkeypatch.setattr(md, "_run_applescript", fake_applescript)
+    monkeypatch.setattr(md, "_play_store_track", fake_play_store)
+    result = se._add_track_to_named_playlist(
+        "New Artist", "New Track", "Test Playlist",
+        search_result=search_result,
+    )
+    assert jxa_called["called"] is True
+    assert result is True
+
+
+def test_library_first_error_falls_through(monkeypatch):
+    """When library search errors, falls through to JXA path."""
+    search_result = md.SearchResult("12345", True, "Artist", "Track")
+    jxa_called = {"called": False}
+
+    call_count = {"n": 0}
+    def fake_applescript(script):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "error: some error", 0  # library search errored
+        if "search library" in script and "duplicate" in script:
+            return "ok", 0
+        if "current track" in script:
+            if not jxa_called["called"]:
+                return "", 0
+            return "Track|||Artist", 0
+        if "duplicate" in script and "source" in script:
+            return "lib_ok", 0
+        return "", 0
+
+    def fake_play_store(sid):
+        jxa_called["called"] = True
+        return "1"
+
+    monkeypatch.setattr(md, "_run_applescript", fake_applescript)
+    monkeypatch.setattr(md, "_play_store_track", fake_play_store)
+    result = se._add_track_to_named_playlist(
+        "Artist", "Track", "Test Playlist",
+        search_result=search_result,
+    )
+    assert jxa_called["called"] is True
+
+
+def test_backward_compat_without_search_result(monkeypatch):
+    """When called without search_result, calls search_itunes internally."""
+    search_called = {"called": False}
+
+    def fake_search(a, t):
+        search_called["called"] = True
+        return md.SearchResult("12345", True, a, t)
+
+    def fake_applescript(script):
+        if "search library" in script:
+            return "ok", 0
+        return "", 0
+
+    monkeypatch.setattr(md, "search_itunes", fake_search)
+    monkeypatch.setattr(md, "_run_applescript", fake_applescript)
+    result = se._add_track_to_named_playlist(
+        "Artist", "Track", "Test Playlist",
+    )
+    assert search_called["called"] is True
+    assert result is True
