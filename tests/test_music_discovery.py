@@ -1084,31 +1084,56 @@ def test_fetch_top_tracks_network_error_returns_empty():
     assert result == []
 
 
+# ── SearchResult dataclass ────────────────────────────────
+
+def test_search_result_bool_true_when_found():
+    """SearchResult is truthy when store_id is set."""
+    result = md.SearchResult(store_id="12345", searched_ok=True)
+    assert bool(result) is True
+
+def test_search_result_bool_false_when_not_found():
+    """SearchResult is falsy when store_id is None but searched_ok is True."""
+    result = md.SearchResult(store_id=None, searched_ok=True)
+    assert bool(result) is False
+
+def test_search_result_bool_false_on_error():
+    """SearchResult is falsy when searched_ok is False (error case)."""
+    result = md.SearchResult(store_id=None, searched_ok=False)
+    assert bool(result) is False
+
+
 # ── search_itunes ─────────────────────────────────────────
 
-def test_search_itunes_returns_track_id(monkeypatch):
-    """Returns store track ID string on success."""
+def test_search_itunes_returns_search_result_on_success(monkeypatch):
+    """Returns SearchResult with store_id, searched_ok=True, and canonical fields on success."""
     mock_resp = type("R", (), {
         "status_code": 200,
-        "json": lambda self: {"resultCount": 1, "results": [{"trackId": 12345, "kind": "song"}]},
+        "json": lambda self: {"resultCount": 1, "results": [
+            {"trackId": 12345, "kind": "song", "artistName": "Radiohead", "trackName": "Creep"},
+        ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
-    assert md.search_itunes("Radiohead", "Creep") == "12345"
+    result = md.search_itunes("Radiohead", "Creep")
+    assert result.store_id == "12345"
+    assert result.searched_ok is True
+    assert result.canonical_artist == "Radiohead"
+    assert result.canonical_track == "Creep"
 
 def test_search_itunes_filters_music_videos(monkeypatch):
     """Skips music videos and returns only songs."""
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"resultCount": 2, "results": [
-            {"trackId": 111, "kind": "music-video", "artistName": "Radiohead"},
-            {"trackId": 222, "kind": "song", "artistName": "Radiohead"},
+            {"trackId": 111, "kind": "music-video", "artistName": "Radiohead", "trackName": "Creep"},
+            {"trackId": 222, "kind": "song", "artistName": "Radiohead", "trackName": "Creep"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
-    assert md.search_itunes("Radiohead", "Creep") == "222"
+    result = md.search_itunes("Radiohead", "Creep")
+    assert result.store_id == "222"
 
 def test_search_itunes_returns_none_when_only_videos(monkeypatch):
-    """Returns None when all results are music videos."""
+    """Returns SearchResult(None, searched_ok=True) when all results are music videos."""
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"resultCount": 1, "results": [
@@ -1116,21 +1141,49 @@ def test_search_itunes_returns_none_when_only_videos(monkeypatch):
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
-    assert md.search_itunes("Radiohead", "Creep") is None
+    result = md.search_itunes("Radiohead", "Creep")
+    assert not result
+    assert result.searched_ok is True
 
 def test_search_itunes_returns_none_on_no_results(monkeypatch):
-    """Returns None when no tracks found."""
+    """Returns SearchResult(None, searched_ok=True) when no tracks found."""
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"resultCount": 0, "results": []},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
-    assert md.search_itunes("Nobody", "Fake") is None
+    result = md.search_itunes("Nobody", "Fake")
+    assert not result
+    assert result.searched_ok is True
 
-def test_search_itunes_returns_none_on_error(monkeypatch):
-    """Returns None on network error."""
+def test_search_itunes_returns_searched_ok_false_on_error(monkeypatch):
+    """Returns SearchResult(None, searched_ok=False) on network error."""
     monkeypatch.setattr("requests.get", lambda *a, **kw: (_ for _ in ()).throw(Exception("timeout")))
-    assert md.search_itunes("Radiohead", "Creep") is None
+    result = md.search_itunes("Radiohead", "Creep")
+    assert not result
+    assert result.searched_ok is False
+
+def test_search_itunes_returns_searched_ok_false_on_non_200(monkeypatch):
+    """Returns SearchResult(None, searched_ok=False) on non-200 HTTP response."""
+    mock_resp = type("R", (), {"status_code": 503})()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    result = md.search_itunes("Radiohead", "Creep")
+    assert not result
+    assert result.searched_ok is False
+
+def test_search_itunes_fuzzy_match(monkeypatch):
+    """Returns SearchResult with store_id via fuzzy match when artist name contains query."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"resultCount": 1, "results": [
+            {"trackId": 999, "kind": "song", "artistName": "The Black Keys", "trackName": "Lonely Boy"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    # "black keys" is contained in "the black keys" — fuzzy match
+    result = md.search_itunes("Black Keys", "Lonely Boy")
+    assert result.store_id == "999"
+    assert result.canonical_artist == "The Black Keys"
 
 
 # ── setup_playlist ────────────────────────────────────────
@@ -1198,7 +1251,7 @@ def test_setup_playlist_script_references_playlist_name(monkeypatch):
 
 def test_add_track_to_playlist_returns_true_on_ok(monkeypatch):
     """Returns True when track is found in library and added to playlist."""
-    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: md.SearchResult("12345", True, a, t))
     monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
     responses = iter([
         ("not_found", 0),          # dedup check
@@ -1213,14 +1266,14 @@ def test_add_track_to_playlist_returns_true_on_ok(monkeypatch):
 
 def test_add_track_to_playlist_returns_false_when_not_on_apple_music(monkeypatch):
     """Returns False when iTunes Search API finds nothing."""
-    monkeypatch.setattr(md, "search_itunes", lambda a, t: None)
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: md.SearchResult(None, True))
     responses = iter([("not_found", 0)])  # dedup check
     monkeypatch.setattr(md, "_run_applescript", lambda script: next(responses))
     assert md.add_track_to_playlist("Nobody", "Fake Song") is False
 
 def test_add_track_to_playlist_raises_on_osascript_failure(monkeypatch):
     """Raises RuntimeError when osascript returns non-zero."""
-    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: md.SearchResult("12345", True, a, t))
     monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
     responses = iter([
         ("not_found", 0),          # dedup check
@@ -1236,7 +1289,7 @@ def test_add_track_to_playlist_raises_on_osascript_failure(monkeypatch):
 
 def test_add_track_not_in_library_uses_split_add(monkeypatch):
     """When track is not in library, uses separate library-add then playlist-add."""
-    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: md.SearchResult("12345", True, a, t))
     monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
     responses = iter([
         ("not_found", 0),          # dedup check
@@ -1254,7 +1307,7 @@ def test_add_track_not_in_library_uses_split_add(monkeypatch):
 
 def test_add_track_library_add_retries_on_notfound(monkeypatch):
     """When track added to library but not immediately findable, retries."""
-    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: md.SearchResult("12345", True, a, t))
     monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
     responses = iter([
         ("not_found", 0),          # dedup check
@@ -1979,7 +2032,7 @@ def test_build_playlist_final_verify_catches_late_sync(monkeypatch, tmp_path):
 
 def test_add_track_no_combined_library_and_playlist(monkeypatch):
     """Verify library-add and playlist-add are never in the same AppleScript call."""
-    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: md.SearchResult("12345", True, a, t))
     monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
     scripts = []
     responses = iter([
@@ -2007,7 +2060,7 @@ def test_add_track_no_combined_library_and_playlist(monkeypatch):
 
 def test_add_track_library_path(monkeypatch):
     """When track IS in library, add_track_to_playlist uses library copy."""
-    monkeypatch.setattr(md, "search_itunes", lambda a, t: "12345")
+    monkeypatch.setattr(md, "search_itunes", lambda a, t: md.SearchResult("12345", True, a, t))
     monkeypatch.setattr(md, "_play_store_track", lambda sid: True)
     responses = iter([
         ("not_found", 0),
