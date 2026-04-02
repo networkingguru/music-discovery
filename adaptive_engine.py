@@ -1032,9 +1032,13 @@ def _run_build(cache_dir: pathlib.Path, args):
         all_tracks = lastfm_tracks + unique_catalog
         artist_search_results = []
         added_count = 0
+        search_attempts = 0
+        max_attempts = tracks_per_artist * 3  # cap to avoid spending minutes per artist
 
         for track in all_tracks:
             if added_count >= tracks_per_artist:
+                break
+            if search_attempts >= max_attempts:
                 break
             track_name = track.get("name", "")
             if not track_name:
@@ -1048,6 +1052,7 @@ def _run_build(cache_dir: pathlib.Path, args):
             # Search iTunes
             result = search_itunes(artist, track_name)
             artist_search_results.append(result)
+            search_attempts += 1
 
             if not result:
                 continue
