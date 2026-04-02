@@ -203,7 +203,11 @@ class WeightLearner:
                 solver="lbfgs",
                 random_state=42,
             )
-        clf.fit(X_norm, labels)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning,
+                                     message=".*encountered in matmul.*")
+            clf.fit(X_norm, labels)
 
         # Extract weights and bias (coef_ is shape (1, n) for binary classification)
         self._weights = list(map(float, clf.coef_[0]))

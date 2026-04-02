@@ -254,6 +254,7 @@ def _run_seed(cache_dir: pathlib.Path, args):
         load_manifest,
         load_post_listen_history,
     )
+    from affinity_graph import LIBRARY_HALF_LIFE_DAYS, DISCOVERY_HALF_LIFE_DAYS
 
     load_dotenv()
 
@@ -292,10 +293,14 @@ def _run_seed(cache_dir: pathlib.Path, args):
     log.info("  Total library artists: %d", len(library_artists))
 
     # Build seed signals dict for compute_candidate_features
+    # Apply log1p scaling to compress large ranges (playcount can be 10000+)
+    # before proximity-weighted aggregation. This prevents numerical overflow
+    # in the logistic regression solver.
+    import math as _math
     seed_signals = {
-        "favorites": {a: float(v) for a, v in favorites.items()},
-        "playcount": {a: float(v) for a, v in playcounts.items()},
-        "playlists": {a: float(v) for a, v in playlists.items()},
+        "favorites": {a: _math.log1p(float(v)) for a, v in favorites.items()},
+        "playcount": {a: _math.log1p(float(v)) for a, v in playcounts.items()},
+        "playlists": {a: _math.log1p(float(v)) for a, v in playlists.items()},
         "ratings": ratings,
     }
 
@@ -476,10 +481,21 @@ def _run_seed(cache_dir: pathlib.Path, args):
     file_blocklist = load_blocklist(paths["blocklist"])
     full_blocklist = user_blocklist | file_blocklist | ai_blocklist
 
-    # Propagate affinity (inject library favorites as positive signal)
+    # Propagate affinity:
+    # 1. Library favorites as background positive signal (decayed as library data)
+    # 2. Wargaming favorites as strong discovery feedback (recent, high signal)
     graph.reset_injections()
     for artist, fav_count in favorites.items():
-        graph.inject_feedback(artist, fave_count=fav_count)
+        graph.inject_feedback(
+            artist, fave_count=fav_count, tracks_offered=3,
+            half_life_days=LIBRARY_HALF_LIFE_DAYS,
+        )
+    # Inject wargaming favorites as recent discovery feedback
+    for fav in all_favorites:
+        graph.inject_feedback(
+            fav, fave_count=1, tracks_offered=2,
+            days_ago=7, half_life_days=DISCOVERY_HALF_LIFE_DAYS,
+        )
     propagated = graph.propagate()
     aff_mm = propagated.get("musicmap", {})
     aff_lfm = propagated.get("lastfm", {})
@@ -631,11 +647,12 @@ def _run_build(cache_dir: pathlib.Path, args):
         | set(playlists.keys()) | set(ratings.keys())
     )
 
+    import math as _math
     seed_signals = {
-        "favorites": {a: float(v) for a, v in favorites.items()},
-        "playcount": {a: float(v) for a, v in playcounts.items()},
-        "playlists": {a: float(v) for a, v in playlists.items()},
-        "ratings": ratings,
+        "favorites": {a: _math.log1p(float(v)) for a, v in favorites.items()},
+        "playcount": {a: _math.log1p(float(v)) for a, v in playcounts.items()},
+        "playlists": {a: _math.log1p(float(v)) for a, v in playlists.items()},
+        "ratings": ratings,  # Already centered [-1, 1], no scaling needed
     }
 
     # ── Step 3: Optional API signals ─────────────────────────────────────────
@@ -1194,10 +1211,13 @@ def main():
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(message)s",
-    )
+    # Configure only our logger — avoid duplicating handlers from music_discovery
+    if not log.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
 
     cache_dir = pathlib.Path(
         os.environ.get("CACHE_DIR", "~/.cache/music_discovery")
