@@ -424,7 +424,7 @@ def _add_track_to_named_playlist(artist, track_name, playlist_name):
     """Search Apple Music for a track and add it to a named playlist.
     Returns True if added, False if not found."""
     from music_discovery import (
-        search_itunes, _run_applescript, _run_jxa, _play_store_track,
+        search_itunes, SearchResult, _run_applescript, _run_jxa, _play_store_track,
         _applescript_escape,
     )
     import time
@@ -433,8 +433,8 @@ def _add_track_to_named_playlist(artist, track_name, playlist_name):
     safe_artist = _applescript_escape(artist)
     safe_track = _applescript_escape(track_name)
 
-    store_id = search_itunes(artist, track_name)
-    if not store_id:
+    result = search_itunes(artist, track_name)
+    if not result:
         log.info(f"  Not found: {artist} — {track_name}")
         return False
 
@@ -452,7 +452,7 @@ end tell
     prev_track, _ = _run_applescript(snapshot_script)
 
     # Play via MediaPlayer
-    _play_store_track(store_id)
+    _play_store_track(result.store_id)
 
     # Poll until current track changes
     poll_script = '''

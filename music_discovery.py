@@ -23,8 +23,22 @@ import datetime
 import uuid
 import hashlib
 import getpass
+import dataclasses
 import requests
 from bs4 import BeautifulSoup
+
+
+@dataclasses.dataclass
+class SearchResult:
+    """Result from search_itunes(). Use bool() to check if a track was found."""
+    store_id: str | None
+    searched_ok: bool
+    canonical_artist: str = ""
+    canonical_track: str = ""
+
+    def __bool__(self) -> bool:
+        return self.store_id is not None
+
 
 # ── Path Resolution ────────────────────────────────────────
 def _resolve_library_path(cli_override=None):
@@ -1027,7 +1041,7 @@ def _run_jxa(script):
 
 def search_itunes(artist, track_name):
     """Search the iTunes/Apple Music catalog for a track.
-    Returns the store track ID (str) or None if not found.
+    Returns a SearchResult. Use bool() to check if a track was found.
     Verifies the artist name matches to avoid returning wrong tracks.
     Free API — no key required."""
     try:
@@ -1037,7 +1051,7 @@ def search_itunes(artist, track_name):
             "limit": 10,
         })
         if resp.status_code != 200:
-            return None
+            return SearchResult(None, searched_ok=False)
         results = resp.json().get("results", [])
         # Filter out music videos — only accept actual songs
         results = [r for r in results if r.get("kind") == "song"]
@@ -1045,16 +1059,18 @@ def search_itunes(artist, track_name):
         for r in results:
             result_artist = r.get("artistName", "").strip().lower()
             if result_artist == artist_lower:
-                return str(r["trackId"])
+                return SearchResult(str(r["trackId"]), True,
+                                    r.get("artistName", ""), r.get("trackName", ""))
         # Fallback: fuzzy match (one name contains the other)
         for r in results:
             result_artist = r.get("artistName", "").strip().lower()
             if artist_lower in result_artist or result_artist in artist_lower:
-                return str(r["trackId"])
-        return None
+                return SearchResult(str(r["trackId"]), True,
+                                    r.get("artistName", ""), r.get("trackName", ""))
+        return SearchResult(None, searched_ok=True)
     except Exception as e:
         log.debug(f"search_itunes failed for '{artist} - {track_name}': {e}")
-        return None
+        return SearchResult(None, searched_ok=False)
 
 
 def setup_playlist():
@@ -1198,8 +1214,8 @@ end tell
         return True  # already there, count as success
 
     # Step 1: Find the track on Apple Music (free API, no key)
-    store_id = search_itunes(artist, track_name)
-    if not store_id:
+    result = search_itunes(artist, track_name)
+    if not result:
         return False
 
     # Step 2: Snapshot current track before playing (to detect stale playback)
@@ -1216,7 +1232,7 @@ end tell
     prev_track, _ = _run_applescript(snapshot_script)
 
     # Step 3: Play the track via MediaPlayer (makes it visible to Music.app)
-    _play_store_track(store_id)
+    _play_store_track(result.store_id)
 
     # Step 4: Poll until current track changes (replaces hardcoded sleep)
     poll_script = '''
