@@ -454,3 +454,76 @@ def test_build_loop_overflow_past_exhausted_artists(tmp_path):
 
     assert "artist b" in filled_artists
     assert slots_filled == 1
+
+
+def test_multi_round_no_track_overlap(tmp_path):
+    """Simulates 2 rounds and verifies no track is offered twice."""
+    from adaptive_engine import _load_offered_tracks, _save_offered_tracks
+
+    offered_path = tmp_path / "offered_tracks.json"
+
+    # Round 1: offer track A
+    offered_set, entries = _load_offered_tracks(offered_path)
+    assert len(offered_set) == 0
+
+    key = ("fleet foxes", "white winter hymnal")
+    offered_set.add(key)
+    entries.append({"artist": "fleet foxes", "track": "white winter hymnal", "round": 1})
+    _save_offered_tracks(offered_path, entries)
+
+    # Round 2: track A should be filtered
+    offered_set2, entries2 = _load_offered_tracks(offered_path)
+    assert key in offered_set2
+
+    all_tracks = [
+        {"name": "White Winter Hymnal", "artist": "Fleet Foxes"},
+        {"name": "Mykonos", "artist": "Fleet Foxes"},
+    ]
+    available = [t for t in all_tracks if (t["artist"].lower(), t["name"].lower()) not in offered_set2]
+    assert len(available) == 1
+    assert available[0]["name"] == "Mykonos"
+
+
+def test_three_strikes_auto_blocklist(tmp_path):
+    """Artist with 3 consecutive clean misses is auto-blocklisted."""
+    from adaptive_engine import (
+        _evaluate_artist_strikes, _auto_blocklist_artist,
+        _load_search_strikes, _save_search_strikes,
+    )
+    from music_discovery import SearchResult
+
+    strikes_path = tmp_path / "search_strikes.json"
+    blocklist_path = tmp_path / "ai_blocklist.txt"
+    strikes = _load_search_strikes(strikes_path)
+
+    not_found = [SearchResult(None, True)]
+
+    # Rounds 1-2: strikes accumulate
+    for rnd in range(1, 3):
+        result = _evaluate_artist_strikes(strikes, "ghost artist", not_found, rnd)
+        assert result is False
+
+    # Round 3: hits threshold
+    result = _evaluate_artist_strikes(strikes, "ghost artist", not_found, 3)
+    assert result is True
+
+    _auto_blocklist_artist(blocklist_path, "ghost artist", 3)
+    assert "ghost artist" in blocklist_path.read_text()
+    _save_search_strikes(strikes_path, strikes)
+
+
+def test_two_strikes_then_found_resets(tmp_path):
+    """Artist found after 2 strikes resets counter."""
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+
+    strikes = {}
+    not_found = [SearchResult(None, True)]
+    found = [SearchResult("123", True, "Artist", "Track")]
+
+    _evaluate_artist_strikes(strikes, "artist", not_found, 1)
+    _evaluate_artist_strikes(strikes, "artist", not_found, 2)
+    assert strikes["artist"]["count"] == 2
+
+    _evaluate_artist_strikes(strikes, "artist", found, 3)
+    assert strikes["artist"]["count"] == 0
