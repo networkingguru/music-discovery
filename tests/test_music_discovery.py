@@ -2383,3 +2383,23 @@ def test_ai_detection_end_to_end(monkeypatch):
         scored, cache, ai_blocklist=ai_bl, ai_allowlist=ai_al)
     names = [name for _, name in result]
     assert names == ["deep watch", "real band", "obscure real", "api failure"]
+
+
+def test_collect_track_metadata_jxa(monkeypatch):
+    """collect_track_metadata_jxa returns per-track skip counts, play counts, fave state, dateAdded."""
+    import json as _json
+    jxa_output = _json.dumps([
+        {"name": "Blackwater Park", "artist": "opeth", "playedCount": 15,
+         "skippedCount": 2, "favorited": True, "dateAdded": "2024-06-15T10:30:00Z"},
+        {"name": "Damnation", "artist": "opeth", "playedCount": 8,
+         "skippedCount": 0, "favorited": False, "dateAdded": "2024-06-15T10:30:00Z"},
+    ])
+    monkeypatch.setattr("music_discovery._run_jxa", lambda script: (jxa_output, 0))
+
+    from music_discovery import collect_track_metadata_jxa
+    result = collect_track_metadata_jxa()
+    assert len(result) == 2
+    assert result[0]["name"] == "Blackwater Park"
+    assert result[0]["skippedCount"] == 2
+    assert result[0]["favorited"] is True
+    assert result[0]["dateAdded"] == "2024-06-15T10:30:00Z"
