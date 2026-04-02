@@ -10,6 +10,7 @@ import json
 import logging
 import sys
 import pathlib
+import requests
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from music_discovery import _run_jxa
@@ -231,4 +232,56 @@ def collect_recommendations(session):
                 name = item.get("attributes", {}).get("artistName", "")
                 if name:
                     artists.add(name.strip().lower())
+    return artists
+
+
+LASTFM_API_BASE = "http://ws.audioscrobbler.com/2.0/"
+
+
+def collect_lastfm_loved(username, api_key):
+    """Fetch loved tracks from a Last.fm user profile.
+
+    Args:
+        username: Last.fm username. Returns empty set if None.
+        api_key: Last.fm API key.
+
+    Returns:
+        Set of lowercase artist names that the user has loved tracks from.
+        Returns a partial set on API failure (with a warning logged).
+    """
+    if not username:
+        return set()
+
+    artists = set()
+    page = 1
+
+    while True:
+        params = {
+            "method": "user.getLovedTracks",
+            "user": username,
+            "api_key": api_key,
+            "format": "json",
+            "limit": 200,
+            "page": page,
+        }
+        try:
+            resp = requests.get(LASTFM_API_BASE, params=params, timeout=15)
+            resp.raise_for_status()
+        except Exception as e:
+            log.warning(f"Last.fm loved tracks fetch failed (page {page}): {e}")
+            break
+
+        data = resp.json()
+        loved = data.get("lovedtracks", {})
+        tracks = loved.get("track", [])
+        for track in tracks:
+            name = track.get("artist", {}).get("name", "")
+            if name:
+                artists.add(name.strip().lower())
+
+        total_pages = int(loved.get("@attr", {}).get("totalPages", "1"))
+        if page >= total_pages:
+            break
+        page += 1
+
     return artists

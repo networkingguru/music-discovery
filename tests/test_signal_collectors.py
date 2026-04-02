@@ -238,3 +238,50 @@ def test_collect_recommendations_empty():
 
     result = collect_recommendations(mock_session)
     assert result == set()
+
+
+def test_collect_lastfm_loved(monkeypatch):
+    """collect_lastfm_loved returns set of lowercase artist names with loved tracks."""
+    page1_json = {
+        "lovedtracks": {
+            "track": [
+                {"artist": {"name": "Opeth"}},
+                {"artist": {"name": "Katatonia"}},
+            ],
+            "@attr": {"totalPages": "1"},
+        }
+    }
+    def mock_get(url, **kwargs):
+        resp = type("R", (), {"status_code": 200})()
+        resp.json = lambda: page1_json
+        resp.raise_for_status = lambda: None
+        return resp
+    monkeypatch.setattr("signal_collectors.requests.get", mock_get)
+    from signal_collectors import collect_lastfm_loved
+    result = collect_lastfm_loved("testuser", "fakekey")
+    assert result == {"opeth", "katatonia"}
+
+
+def test_collect_lastfm_loved_no_username():
+    """collect_lastfm_loved returns empty set when username is None."""
+    from signal_collectors import collect_lastfm_loved
+    result = collect_lastfm_loved(None, "fakekey")
+    assert result == set()
+
+
+def test_collect_lastfm_loved_pagination(monkeypatch):
+    """collect_lastfm_loved handles multi-page results."""
+    pages = {
+        1: {"lovedtracks": {"track": [{"artist": {"name": "Opeth"}}], "@attr": {"totalPages": "2"}}},
+        2: {"lovedtracks": {"track": [{"artist": {"name": "Tool"}}], "@attr": {"totalPages": "2"}}},
+    }
+    def mock_get(url, **kwargs):
+        page = kwargs.get("params", {}).get("page", 1)
+        resp = type("R", (), {"status_code": 200})()
+        resp.json = lambda p=page: pages[p]
+        resp.raise_for_status = lambda: None
+        return resp
+    monkeypatch.setattr("signal_collectors.requests.get", mock_get)
+    from signal_collectors import collect_lastfm_loved
+    result = collect_lastfm_loved("testuser", "fakekey")
+    assert result == {"opeth", "tool"}
