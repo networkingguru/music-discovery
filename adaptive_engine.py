@@ -1127,6 +1127,8 @@ end tell
     # ── Step 10: Save pre-listen snapshot ────────────────────────────────────
     log.info("Step 8: Saving pre-listen snapshot...")
 
+    # Re-collect track metadata — tracks added during build are now in the library
+    track_metadata = collect_track_metadata_jxa()
     snapshot = create_snapshot(track_metadata, offered_tracks)
     save_snapshot(cache_dir / "pre_listen_snapshot.json", snapshot)
     log.info("  Saved snapshot with %d tracks.", len(snapshot))
