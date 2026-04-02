@@ -123,6 +123,59 @@ def _evaluate_artist_strikes(strikes: dict, artist: str,
     return entry["count"] >= STRIKE_THRESHOLD
 
 
+# ── Auto-blocklist write and on-demand re-check ──────────────────────────────
+
+RECHECK_COOLDOWN = 10
+
+
+def _auto_blocklist_artist(blocklist_path: pathlib.Path, artist: str, round_num: int):
+    """Append an artist to ai_blocklist.txt if not already present."""
+    existing = set()
+    if blocklist_path.exists():
+        for line in blocklist_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                existing.add(stripped.lower())
+
+    if artist.lower() in existing:
+        return
+
+    with open(blocklist_path, "a", encoding="utf-8") as f:
+        f.write(f"# auto-blocklisted round {round_num}:\n")
+        f.write(f"{artist}\n")
+    log.warning("Auto-blocklisted \"%s\" — not found on Apple Music for %d consecutive rounds",
+                artist, STRIKE_THRESHOLD)
+
+
+def _should_recheck_artist(strikes: dict, artist: str, current_round: int) -> bool:
+    """Check if a blocklisted artist should be re-tested."""
+    entry = strikes.get(artist)
+    if not entry:
+        return False
+    last_recheck = entry.get("last_recheck", 0)
+    return current_round - last_recheck >= RECHECK_COOLDOWN
+
+
+def _remove_from_blocklist(blocklist_path: pathlib.Path, artist: str):
+    """Remove an auto-blocklisted artist and its comment from the blocklist file."""
+    if not blocklist_path.exists():
+        return
+    lines = blocklist_path.read_text(encoding="utf-8").splitlines()
+    new_lines = []
+    skip_next = False
+    for line in lines:
+        if skip_next:
+            skip_next = False
+            continue
+        if line.strip().lower() == artist.lower():
+            if new_lines and new_lines[-1].strip().startswith("# auto-blocklisted"):
+                new_lines.pop()
+            continue
+        new_lines.append(line)
+    blocklist_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    log.info("Re-checked \"%s\" — now available on Apple Music, removed from auto-blocklist", artist)
+
+
 # ── Pure scoring functions ───────────────────────────────────────────────────
 
 def compute_final_score(

@@ -519,3 +519,76 @@ def test_evaluate_strikes_threshold_returns_blocklist():
     result = _evaluate_artist_strikes(strikes, "artist a", [SearchResult(None, True)], current_round=5)
     assert result is True
     assert strikes["artist a"]["count"] == 3
+
+
+# ── Task 7: Auto-blocklist write and on-demand re-check ──────────────────────
+
+
+def test_auto_blocklist_appends_artist(tmp_path):
+    from adaptive_engine import _auto_blocklist_artist
+    path = tmp_path / "ai_blocklist.txt"
+    path.write_text("existing artist\n")
+    _auto_blocklist_artist(path, "new artist", round_num=5)
+    lines = path.read_text().strip().split("\n")
+    assert "existing artist" in lines
+    assert "# auto-blocklisted round 5:" in lines[-2]
+    assert "new artist" == lines[-1]
+
+
+def test_auto_blocklist_deduplicates(tmp_path):
+    from adaptive_engine import _auto_blocklist_artist
+    path = tmp_path / "ai_blocklist.txt"
+    path.write_text("some artist\n")
+    _auto_blocklist_artist(path, "some artist", round_num=3)
+    lines = [l for l in path.read_text().strip().split("\n") if not l.startswith("#")]
+    assert lines.count("some artist") == 1
+
+
+def test_auto_blocklist_creates_file(tmp_path):
+    from adaptive_engine import _auto_blocklist_artist
+    path = tmp_path / "ai_blocklist.txt"
+    _auto_blocklist_artist(path, "new artist", round_num=1)
+    assert path.exists()
+    assert "new artist" in path.read_text()
+
+
+def test_should_recheck_true_after_cooldown():
+    from adaptive_engine import _should_recheck_artist
+    strikes = {"artist": {"count": 3, "last_round": 5, "last_recheck": 1}}
+    assert _should_recheck_artist(strikes, "artist", current_round=12) is True
+
+
+def test_should_recheck_false_within_cooldown():
+    from adaptive_engine import _should_recheck_artist
+    strikes = {"artist": {"count": 3, "last_round": 5, "last_recheck": 8}}
+    assert _should_recheck_artist(strikes, "artist", current_round=12) is False
+
+
+def test_should_recheck_false_when_not_in_strikes():
+    from adaptive_engine import _should_recheck_artist
+    assert _should_recheck_artist({}, "unknown", current_round=50) is False
+
+
+def test_remove_from_blocklist_removes_artist_and_comment(tmp_path):
+    from adaptive_engine import _remove_from_blocklist
+    path = tmp_path / "ai_blocklist.txt"
+    path.write_text("manual artist\n# auto-blocklisted round 3:\nghost artist\nanother artist\n")
+    _remove_from_blocklist(path, "ghost artist")
+    content = path.read_text()
+    assert "ghost artist" not in content
+    assert "auto-blocklisted round 3" not in content
+    assert "manual artist" in content
+    assert "another artist" in content
+
+
+def test_remove_from_blocklist_missing_file(tmp_path):
+    from adaptive_engine import _remove_from_blocklist
+    _remove_from_blocklist(tmp_path / "ai_blocklist.txt", "nobody")
+
+
+def test_remove_from_blocklist_artist_not_present(tmp_path):
+    from adaptive_engine import _remove_from_blocklist
+    path = tmp_path / "ai_blocklist.txt"
+    path.write_text("some artist\n")
+    _remove_from_blocklist(path, "other artist")
+    assert "some artist" in path.read_text()
