@@ -1136,6 +1136,7 @@ end tell
 
 def _play_store_track(store_id):
     """Use MediaPlayer framework via JXA to play a catalog track by store ID.
+    Polls isPreparedToPlay with NSRunLoop to handle async buffering.
     This makes the track visible to Music.app as the current track."""
     script = f'''
 ObjC.import("MediaPlayer");
@@ -1145,13 +1146,23 @@ var ids = $.NSArray.arrayWithObject($("{store_id}"));
 var descriptor = $.MPMusicPlayerStoreQueueDescriptor.alloc.initWithStoreIDs(ids);
 player.setQueueWithDescriptor(descriptor);
 player.prepareToPlay;
+var rl = $.NSRunLoop.currentRunLoop;
+var deadline = $.NSDate.dateWithTimeIntervalSinceNow(10.0);
+while (!player.isPreparedToPlay) {{
+    var step = $.NSDate.dateWithTimeIntervalSinceNow(0.25);
+    rl.runUntilDate(step);
+    if ($.NSDate.date.compare(deadline) === 2) break;
+}}
 player.play;
-"ok";
+var post = $.NSDate.dateWithTimeIntervalSinceNow(1.0);
+rl.runUntilDate(post);
+var state = player.playbackState;
+String(state);
 '''
     out, code = _run_jxa(script)
     if code != 0:
         raise RuntimeError(f"JXA MediaPlayer failed (code {code})")
-    return out == "ok"
+    return out.strip()
 
 
 def _stop_playback():

@@ -2456,3 +2456,24 @@ def test_collect_track_metadata_jxa(monkeypatch):
     assert result[0]["skippedCount"] == 2
     assert result[0]["favorited"] is True
     assert result[0]["dateAdded"] == "2024-06-15T10:30:00Z"
+
+
+# ── _play_store_track JXA fix ─────────────────────────────
+
+def test_play_store_track_script_polls_is_prepared(monkeypatch):
+    """JXA script should poll isPreparedToPlay, not use a fixed wait."""
+    captured = {}
+    def fake_jxa(script):
+        captured["script"] = script
+        return "1", 0
+    monkeypatch.setattr(md, "_run_jxa", fake_jxa)
+    md._play_store_track("12345")
+    assert "isPreparedToPlay" in captured["script"]
+    assert "NSRunLoop" in captured["script"]
+    assert '"12345"' in captured["script"] or "'12345'" in captured["script"]
+
+def test_play_store_track_raises_on_jxa_failure(monkeypatch):
+    """Raises RuntimeError when JXA exits non-zero."""
+    monkeypatch.setattr(md, "_run_jxa", lambda s: ("", 1))
+    with pytest.raises(RuntimeError, match="JXA MediaPlayer failed"):
+        md._play_store_track("12345")
