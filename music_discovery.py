@@ -975,16 +975,17 @@ def fetch_filter_data(artist, api_key):
         log.debug(f"fetch_filter_data failed for '{artist}': {e}")
         return {}
 
-def fetch_top_tracks(artist, api_key):
-    """Fetch top 10 tracks for an artist from Last.fm.
-    Returns list of {"name": str, "artist": str}, or [] on failure."""
+def fetch_top_tracks(artist, api_key, limit=TRACKS_PER_ARTIST):
+    """Fetch top tracks for an artist from Last.fm.
+    Returns list of {"name": str, "artist": str}, or [] on failure.
+    limit defaults to TRACKS_PER_ARTIST (2); pass a higher value for deep cuts."""
     try:
         resp = requests.get(LASTFM_API_URL, timeout=10, params={
             "method":  "artist.getTopTracks",
             "artist":  artist,
             "api_key": api_key,
             "format":  "json",
-            "limit":   TRACKS_PER_ARTIST,
+            "limit":   limit,
         })
         if resp.status_code != 200:
             return []
@@ -1071,6 +1072,43 @@ def search_itunes(artist, track_name):
     except Exception as e:
         log.debug(f"search_itunes failed for '{artist} - {track_name}': {e}")
         return SearchResult(None, searched_ok=False)
+
+
+def fetch_artist_catalog(artist):
+    """Fetch all available songs for an artist from the iTunes Search API.
+    Returns list of {"name": str, "artist": str}. Deduplicates by track name.
+    Free API — no key required."""
+    try:
+        resp = requests.get(ITUNES_SEARCH_URL, timeout=15, params={
+            "term":  artist,
+            "media": "music",
+            "entity": "song",
+            "limit": 200,
+        })
+        if resp.status_code != 200:
+            return []
+        results = resp.json().get("results", [])
+        artist_lower = artist.strip().lower()
+        seen = set()
+        tracks = []
+        for r in results:
+            if r.get("kind") != "song":
+                continue
+            result_artist = r.get("artistName", "").strip().lower()
+            if result_artist != artist_lower and not (
+                artist_lower in result_artist or result_artist in artist_lower
+            ):
+                continue
+            track_name = r.get("trackName", "")
+            key = track_name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            tracks.append({"name": track_name, "artist": r.get("artistName", "")})
+        return tracks
+    except Exception as e:
+        log.debug(f"fetch_artist_catalog failed for '{artist}': {e}")
+        return []
 
 
 def setup_playlist():
