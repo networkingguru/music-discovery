@@ -373,3 +373,64 @@ class TestCollectFeedbackRound:
         after = {("a", "b"): {"played": 1, "skipped": 0, "favorited": False}}
         result = _collect_feedback_round("round-42", before, after, {}, list(before.keys()))
         assert result.round_id == "round-42"
+
+
+# ── Task 5: Offered tracks persistence ──────────────────────────────────────
+
+
+def test_load_offered_tracks_missing_file(tmp_path):
+    from adaptive_engine import _load_offered_tracks
+    track_set, entries = _load_offered_tracks(tmp_path / "offered_tracks.json")
+    assert track_set == set()
+    assert entries == []
+
+
+def test_load_offered_tracks_corrupt_json(tmp_path):
+    from adaptive_engine import _load_offered_tracks
+    path = tmp_path / "offered_tracks.json"
+    path.write_text("not json{{{")
+    track_set, entries = _load_offered_tracks(path)
+    assert track_set == set()
+    assert entries == []
+
+
+def test_load_offered_tracks_valid(tmp_path):
+    from adaptive_engine import _load_offered_tracks
+    path = tmp_path / "offered_tracks.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "tracks": [
+            {"artist": "fleet foxes", "track": "white winter hymnal", "round": 1},
+            {"artist": "fleet foxes", "track": "mykonos", "round": 1},
+        ]
+    }))
+    track_set, entries = _load_offered_tracks(path)
+    assert ("fleet foxes", "white winter hymnal") in track_set
+    assert ("fleet foxes", "mykonos") in track_set
+    assert len(track_set) == 2
+    assert len(entries) == 2
+
+
+def test_save_offered_tracks_atomic(tmp_path):
+    from adaptive_engine import _save_offered_tracks
+    path = tmp_path / "offered_tracks.json"
+    entries = [{"artist": "fleet foxes", "track": "white winter hymnal", "round": 1}]
+    _save_offered_tracks(path, entries)
+    data = json.loads(path.read_text())
+    assert data["version"] == 1
+    assert len(data["tracks"]) == 1
+    assert not pathlib.Path(str(path) + ".tmp").exists()
+
+
+def test_save_then_load_roundtrip(tmp_path):
+    from adaptive_engine import _load_offered_tracks, _save_offered_tracks
+    path = tmp_path / "offered_tracks.json"
+    entries = [
+        {"artist": "artist a", "track": "track 1", "round": 5},
+        {"artist": "artist b", "track": "track 2", "round": 5},
+    ]
+    _save_offered_tracks(path, entries)
+    loaded_set, loaded_entries = _load_offered_tracks(path)
+    assert ("artist a", "track 1") in loaded_set
+    assert ("artist b", "track 2") in loaded_set
+    assert len(loaded_entries) == 2

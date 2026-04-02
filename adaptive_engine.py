@@ -44,6 +44,30 @@ DEFAULT_PLAYLIST_ARTISTS = 50
 DEFAULT_TRACKS_PER_ARTIST = 2
 
 
+# ── Offered tracks persistence ───────────────────────────────────────────────
+
+def _load_offered_tracks(path: pathlib.Path) -> tuple[set, list]:
+    """Load previously offered tracks. Returns (set of (artist, track), raw entries list)."""
+    if not path.exists():
+        return set(), []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        entries = data.get("tracks", [])
+        track_set = {(t["artist"], t["track"]) for t in entries}
+        return track_set, entries
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        log.warning("Corrupt offered_tracks.json, starting fresh: %s", e)
+        return set(), []
+
+
+def _save_offered_tracks(path: pathlib.Path, entries: list):
+    """Save offered tracks to JSON with atomic write."""
+    data = {"version": 1, "tracks": entries}
+    tmp = pathlib.Path(str(path) + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 # ── Pure scoring functions ───────────────────────────────────────────────────
 
 def compute_final_score(
