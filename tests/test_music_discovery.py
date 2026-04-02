@@ -1186,6 +1186,80 @@ def test_search_itunes_fuzzy_match(monkeypatch):
     assert result.canonical_artist == "The Black Keys"
 
 
+# ── fetch_artist_catalog ──────────────────────────────────
+
+def test_fetch_artist_catalog_returns_tracks(monkeypatch):
+    """Returns songs only, filtering out music-video kind entries."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"results": [
+            {"kind": "song",        "artistName": "Fleet Foxes", "trackName": "White Winter Hymnal"},
+            {"kind": "music-video", "artistName": "Fleet Foxes", "trackName": "Mykonos Video"},
+            {"kind": "song",        "artistName": "Fleet Foxes", "trackName": "Ragged Wood"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    result = md.fetch_artist_catalog("Fleet Foxes")
+    names = [t["name"] for t in result]
+    assert "White Winter Hymnal" in names
+    assert "Ragged Wood" in names
+    assert "Mykonos Video" not in names
+    assert len(result) == 2
+
+
+def test_fetch_artist_catalog_filters_wrong_artist(monkeypatch):
+    """Tracks attributed to a different artist are excluded."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"results": [
+            {"kind": "song", "artistName": "Fleet Foxes",  "trackName": "White Winter Hymnal"},
+            {"kind": "song", "artistName": "Someone Else", "trackName": "Impostor Track"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    result = md.fetch_artist_catalog("Fleet Foxes")
+    assert len(result) == 1
+    assert result[0]["name"] == "White Winter Hymnal"
+
+
+def test_fetch_artist_catalog_returns_empty_on_error(monkeypatch):
+    """Returns [] when the HTTP request raises an exception."""
+    def boom(*a, **kw):
+        raise RuntimeError("network down")
+    monkeypatch.setattr("requests.get", boom)
+    result = md.fetch_artist_catalog("Fleet Foxes")
+    assert result == []
+
+
+def test_fetch_artist_catalog_fuzzy_match(monkeypatch):
+    """'The Fleet Foxes' in result matches query 'Fleet Foxes' via substring."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"results": [
+            {"kind": "song", "artistName": "The Fleet Foxes", "trackName": "Helplessness Blues"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    result = md.fetch_artist_catalog("Fleet Foxes")
+    assert len(result) == 1
+    assert result[0]["name"] == "Helplessness Blues"
+
+
+def test_fetch_artist_catalog_deduplicates(monkeypatch):
+    """Same track name appearing twice collapses to one entry."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"results": [
+            {"kind": "song", "artistName": "Fleet Foxes", "trackName": "Mykonos"},
+            {"kind": "song", "artistName": "Fleet Foxes", "trackName": "Mykonos"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    result = md.fetch_artist_catalog("Fleet Foxes")
+    assert len(result) == 1
+    assert result[0]["name"] == "Mykonos"
+
+
 # ── setup_playlist ────────────────────────────────────────
 
 def test_setup_playlist_creates_if_missing(monkeypatch):
