@@ -1010,6 +1010,24 @@ def _run_build(cache_dir: pathlib.Path, args):
     playlist_name = f"Adaptive Discovery R{current_round}"
     tracks_per_artist = DEFAULT_TRACKS_PER_ARTIST
 
+    # Create the playlist (library-first path needs it to exist for duplicate)
+    from music_discovery import _run_applescript
+    create_pl_script = f'''
+tell application "Music"
+    try
+        if not (exists user playlist "{playlist_name}") then
+            make new user playlist with properties {{name:"{playlist_name}"}}
+        end if
+        return "ok"
+    on error e
+        return "error: " & e
+    end try
+end tell
+'''
+    pl_out, _ = _run_applescript(create_pl_script)
+    if not pl_out.startswith("ok"):
+        log.error("Failed to create playlist '%s': %s", playlist_name, pl_out)
+
     # Load cross-round state
     offered_path = cache_dir / "offered_tracks.json"
     offered_set, offered_entries = _load_offered_tracks(offered_path)
