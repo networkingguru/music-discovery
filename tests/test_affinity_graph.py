@@ -202,6 +202,23 @@ def test_prune_removes_cold_nodes():
     assert "c" not in g.nodes
 
 
+# ── boundary / cap tests ──────────────────────────────────────────────────────
+
+def test_inject_feedback_listen_penalty_capped():
+    """Many listens cap at MAX_LISTEN_PENALTY, not accumulating unboundedly."""
+    g = AffinityGraph()
+    val = g.inject_feedback("opeth", listen_count=100, days_ago=0)
+    # negative_listen = min((100-1)*0.1, 0.5) = 0.5
+    assert abs(val - (-MAX_LISTEN_PENALTY)) < 1e-9
+
+
+def test_inject_feedback_zero_tracks_offered():
+    """tracks_offered=0 → attenuation=0 → skip contributes nothing."""
+    g = AffinityGraph()
+    val = g.inject_feedback("opeth", skip_count=5, tracks_offered=0, days_ago=0)
+    assert abs(val) < 1e-9
+
+
 # ── save / load roundtrip ─────────────────────────────────────────────────────
 
 def test_save_load_roundtrip():

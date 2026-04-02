@@ -17,7 +17,7 @@ import math
 import logging
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 log = logging.getLogger("affinity_graph")
 
@@ -135,7 +135,6 @@ class AffinityGraph:
     def propagate(
         self,
         max_hops: int = DEFAULT_MAX_HOPS,
-        listen_only_max_hops: int = 2,
     ) -> Dict[str, Dict[str, float]]:
         """Propagate injections through the graph via BFS.
 
@@ -143,10 +142,11 @@ class AffinityGraph:
             {"musicmap": {artist: score}, "lastfm": {artist: score}}
 
         Each key contains propagated scores from that edge source independently.
+        Music-map and Last.fm edges are propagated separately so callers can
+        apply independent weights to the returned score dicts.
 
-        For injections that are purely negative (listen-without-fave signal), the
-        caller should pass max_hops=2 (listen_only_max_hops param is reserved for
-        future per-injection hop limiting; currently all injections use *max_hops*).
+        For listen-without-fave injections (weaker signal), callers should pass
+        max_hops=2 per the spec's 2-hop limit for that signal type.
         """
         mm_scores: Dict[str, float] = {}
         lf_scores: Dict[str, float] = {}
