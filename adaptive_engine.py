@@ -162,11 +162,7 @@ def _remove_from_blocklist(blocklist_path: pathlib.Path, artist: str):
         return
     lines = blocklist_path.read_text(encoding="utf-8").splitlines()
     new_lines = []
-    skip_next = False
     for line in lines:
-        if skip_next:
-            skip_next = False
-            continue
         if line.strip().lower() == artist.lower():
             if new_lines and new_lines[-1].strip().startswith("# auto-blocklisted"):
                 new_lines.pop()
@@ -964,6 +960,31 @@ def _run_build(cache_dir: pathlib.Path, args):
 
     log.info("  Scored %d candidates.", len(candidate_scores))
 
+    # ── Step 7b: On-demand re-check for auto-blocklisted candidates ────────
+    strikes_path = cache_dir / "search_strikes.json"
+    strikes = _load_search_strikes(strikes_path)
+    blocklist_path = pathlib.Path(__file__).parent / "ai_blocklist.txt"
+
+    rechecked = 0
+    for candidate in list(candidate_scores.keys()):
+        if candidate not in full_blocklist:
+            continue
+        if not _should_recheck_artist(strikes, candidate, current_round):
+            continue
+        # Eligible for re-check
+        catalog = fetch_artist_catalog(candidate)
+        strikes.setdefault(candidate, {"count": 3, "last_round": 0, "last_recheck": 0})
+        if catalog:
+            _remove_from_blocklist(blocklist_path, candidate)
+            full_blocklist.discard(candidate)
+            rechecked += 1
+            log.info("  Re-check passed for %s, re-entering candidate pool", candidate)
+        else:
+            strikes[candidate]["last_recheck"] = current_round
+    if rechecked:
+        log.info("  Re-checked blocklist: %d artists recovered.", rechecked)
+    _save_search_strikes(strikes_path, strikes)
+
     # ── Step 8: Rank and filter ──────────────────────────────────────────────
     ranked = rank_candidates(
         candidate_scores,
@@ -990,11 +1011,7 @@ def _run_build(cache_dir: pathlib.Path, args):
 
     # Load cross-round state
     offered_path = cache_dir / "offered_tracks.json"
-    strikes_path = cache_dir / "search_strikes.json"
     offered_set, offered_entries = _load_offered_tracks(offered_path)
-    strikes = _load_search_strikes(strikes_path)
-    project_dir = pathlib.Path(__file__).parent
-    blocklist_path = project_dir / "ai_blocklist.txt"
 
     offered_tracks: set = set()  # (artist, track_name) for this round's snapshot
     artist_idx = 0
@@ -1003,21 +1020,6 @@ def _run_build(cache_dir: pathlib.Path, args):
     while slots_filled < playlist_size and artist_idx < len(ranked):
         _score, artist = ranked[artist_idx]
         artist_idx += 1
-
-        # On-demand re-check for auto-blocklisted artists
-        if artist.lower() in full_blocklist:
-            if _should_recheck_artist(strikes, artist.lower(), current_round):
-                catalog = fetch_artist_catalog(artist)
-                strikes.setdefault(artist.lower(), {"count": 3, "last_round": 0, "last_recheck": 0})
-                if catalog:
-                    _remove_from_blocklist(blocklist_path, artist)
-                    full_blocklist.discard(artist.lower())
-                    log.info("  Re-check passed for %s, re-entering candidate pool", artist)
-                else:
-                    strikes[artist.lower()]["last_recheck"] = current_round
-                    continue
-            else:
-                continue
 
         # Tiered track sourcing: Last.fm top 50 first, then iTunes catalog
         lastfm_tracks = fetch_top_tracks(artist, api_key, limit=50) if api_key else []
