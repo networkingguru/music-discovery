@@ -68,6 +68,61 @@ def _save_offered_tracks(path: pathlib.Path, entries: list):
     os.replace(tmp, path)
 
 
+# ── Search strikes persistence ───────────────────────────────────────────────
+
+STRIKE_THRESHOLD = 3
+
+
+def _load_search_strikes(path: pathlib.Path) -> dict:
+    """Load search strike counters. Returns dict of artist -> {count, last_round, last_recheck}."""
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data.get("strikes", {})
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        log.warning("Corrupt search_strikes.json, starting fresh: %s", e)
+        return {}
+
+
+def _save_search_strikes(path: pathlib.Path, strikes: dict):
+    """Save search strikes with atomic write."""
+    data = {"version": 1, "strikes": strikes}
+    tmp = pathlib.Path(str(path) + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _evaluate_artist_strikes(strikes: dict, artist: str,
+                              search_results: list, current_round: int) -> bool:
+    """Evaluate search results for an artist and update strike counter.
+    Returns True if artist should be auto-blocklisted (hit threshold)."""
+    entry = strikes.get(artist, {"count": 0, "last_round": 0, "last_recheck": 0})
+
+    any_found = any(r.store_id is not None for r in search_results)
+    any_searched_ok = any(r.searched_ok for r in search_results)
+    all_errored = not any_searched_ok
+
+    if any_found:
+        entry["count"] = 0
+        entry["last_round"] = current_round
+        strikes[artist] = entry
+        return False
+
+    if all_errored:
+        return False
+
+    # All searched OK but none found
+    if entry["last_round"] > 0 and current_round - entry["last_round"] > 1:
+        entry["count"] = 0  # reset stale counter
+
+    entry["count"] += 1
+    entry["last_round"] = current_round
+    strikes[artist] = entry
+
+    return entry["count"] >= STRIKE_THRESHOLD
+
+
 # ── Pure scoring functions ───────────────────────────────────────────────────
 
 def compute_final_score(

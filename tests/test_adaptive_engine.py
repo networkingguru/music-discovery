@@ -434,3 +434,88 @@ def test_save_then_load_roundtrip(tmp_path):
     assert ("artist a", "track 1") in loaded_set
     assert ("artist b", "track 2") in loaded_set
     assert len(loaded_entries) == 2
+
+
+# ── Task 6: Search strikes persistence ──────────────────────────────────────
+
+
+def test_load_search_strikes_missing_file(tmp_path):
+    from adaptive_engine import _load_search_strikes
+    assert _load_search_strikes(tmp_path / "search_strikes.json") == {}
+
+
+def test_load_search_strikes_corrupt(tmp_path):
+    from adaptive_engine import _load_search_strikes
+    path = tmp_path / "search_strikes.json"
+    path.write_text("broken")
+    assert _load_search_strikes(path) == {}
+
+
+def test_load_search_strikes_valid(tmp_path):
+    from adaptive_engine import _load_search_strikes
+    path = tmp_path / "search_strikes.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "strikes": {"some artist": {"count": 2, "last_round": 3, "last_recheck": 0}}
+    }))
+    result = _load_search_strikes(path)
+    assert result["some artist"]["count"] == 2
+
+
+def test_save_search_strikes_atomic(tmp_path):
+    from adaptive_engine import _save_search_strikes
+    path = tmp_path / "search_strikes.json"
+    strikes = {"artist a": {"count": 1, "last_round": 5, "last_recheck": 0}}
+    _save_search_strikes(path, strikes)
+    data = json.loads(path.read_text())
+    assert data["version"] == 1
+    assert data["strikes"]["artist a"]["count"] == 1
+
+
+def test_evaluate_strikes_increment():
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+    strikes = {}
+    _evaluate_artist_strikes(strikes, "artist a", [SearchResult(None, True), SearchResult(None, True)], current_round=1)
+    assert strikes["artist a"]["count"] == 1
+
+
+def test_evaluate_strikes_reset_on_found():
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+    strikes = {"artist a": {"count": 2, "last_round": 5, "last_recheck": 0}}
+    _evaluate_artist_strikes(strikes, "artist a", [SearchResult(None, True), SearchResult("123", True, "A", "T")], current_round=6)
+    assert strikes["artist a"]["count"] == 0
+
+
+def test_evaluate_strikes_no_change_on_all_errors():
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+    strikes = {"artist a": {"count": 2, "last_round": 5, "last_recheck": 0}}
+    _evaluate_artist_strikes(strikes, "artist a", [SearchResult(None, False), SearchResult(None, False)], current_round=6)
+    assert strikes["artist a"]["count"] == 2
+
+
+def test_evaluate_strikes_gap_resets_counter():
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+    strikes = {"artist a": {"count": 2, "last_round": 3, "last_recheck": 0}}
+    _evaluate_artist_strikes(strikes, "artist a", [SearchResult(None, True)], current_round=10)
+    assert strikes["artist a"]["count"] == 1
+
+
+def test_evaluate_strikes_mixed_error_and_found_resets():
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+    strikes = {"artist a": {"count": 2, "last_round": 4, "last_recheck": 0}}
+    _evaluate_artist_strikes(strikes, "artist a", [SearchResult(None, False), SearchResult("123", True, "A", "T")], current_round=5)
+    assert strikes["artist a"]["count"] == 0
+
+
+def test_evaluate_strikes_threshold_returns_blocklist():
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+    strikes = {"artist a": {"count": 2, "last_round": 4, "last_recheck": 0}}
+    result = _evaluate_artist_strikes(strikes, "artist a", [SearchResult(None, True)], current_round=5)
+    assert result is True
+    assert strikes["artist a"]["count"] == 3
