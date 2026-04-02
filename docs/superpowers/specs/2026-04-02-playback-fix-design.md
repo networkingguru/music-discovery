@@ -1,7 +1,7 @@
 # Playback Fix & Playlist Robustness — Design Spec
 
 **Date:** 2026-04-02
-**Status:** Draft
+**Status:** Draft (post-review revision)
 **Fixes:** Issue #8 (MediaPlayer JXA playback failure)
 **Improves:** Cross-round track deduplication, auto-blocklist for missing artists
 
@@ -12,11 +12,45 @@ Four related fixes to make the adaptive engine's playlist building reliable:
 1. **Library-first playback** — bypass JXA for tracks already in the user's library
 2. **JXA NSRunLoop fix** — fix async `prepareToPlay` for catalog tracks not in library
 3. **Cross-round track dedup** — never offer the same track twice across rounds
-4. **Auto-blocklist on search strikes** — remove artists not available on Apple Music after 3 consecutive rounds of clean misses
+4. **Auto-blocklist on search strikes** — remove artists not available on Apple Music after 3 consecutive attempts with clean misses
 
-All changes are scoped to `signal_experiment.py:_add_track_to_named_playlist()`, `music_discovery.py:_play_store_track()`, and `adaptive_engine.py:_run_build()`. No new files except `search_strikes.json` (data).
+All changes are scoped to `signal_experiment.py:_add_track_to_named_playlist()`, `music_discovery.py:_play_store_track()`, `music_discovery.py:search_itunes()`, and `adaptive_engine.py:_run_build()`. New data files: `offered_tracks.json`, `search_strikes.json`.
 
-## 2. Library-First Playback
+## 2. `SearchResult` Dataclass
+
+### Problem
+
+Multiple fixes need richer data from `search_itunes()`: the strike system needs to distinguish "not found" from "error," and the library-first path needs canonical metadata from the API response. Currently `search_itunes()` returns `str | None`, which cannot carry this information.
+
+### Solution
+
+A `SearchResult` dataclass returned by `search_itunes()`:
+
+```python
+@dataclasses.dataclass
+class SearchResult:
+    store_id: str | None        # Track store ID, or None
+    searched_ok: bool           # True if API responded (200 + valid JSON), False on error/timeout
+    canonical_artist: str = ""  # artistName from API response (empty if not found or error)
+    canonical_track: str = ""   # trackName from API response (empty if not found or error)
+
+    def __bool__(self) -> bool:
+        return self.store_id is not None
+```
+
+**Backward compatibility:** The `__bool__` method means all existing callers that do `if not store_id:` or `if store_id:` continue to work correctly. `SearchResult(None, True)` is falsy, `SearchResult("12345", True)` is truthy.
+
+**Callers that use `store_id` as a string** (e.g., passing to `_play_store_track(store_id)`) must be updated to access `result.store_id`. These are:
+
+- `signal_experiment.py:_add_track_to_named_playlist()` line 436 — primary consumer, gets full update
+- `music_discovery.py:add_track_to_playlist()` line 1201 — update to `result.store_id`
+- All test mocks returning `"12345"` or `None` — update to return `SearchResult(...)` instances
+
+### Where to define
+
+In `music_discovery.py`, near the top with other data structures. Import in callers.
+
+## 3. Library-First Playback
 
 ### Current behavior
 
@@ -24,10 +58,11 @@ Every track goes through: iTunes Search API → JXA MediaPlayer play → poll Mu
 
 ### New behavior
 
-1. Call `search_itunes(artist, track_name)` to get canonical track name + artist (and store ID as fallback)
-2. Search Music.app library via AppleScript: exact match on name + artist
+1. Call `search_itunes(artist, track_name)` — returns `SearchResult` with canonical names
+2. If search succeeded (`result.searched_ok` and `result.store_id`): search Music.app library via AppleScript using canonical artist + track name
 3. If found in library: duplicate directly to playlist. No playback, no JXA. ~1s.
-4. If not found: fall back to JXA path (section 3)
+4. If not in library: fall back to JXA path (section 4)
+5. If search failed (`not result.searched_ok`): fall back to JXA path using original artist/track names
 
 ### Why search_itunes first?
 
@@ -37,28 +72,38 @@ The user's library may have slightly different metadata (e.g., "The Black Keys" 
 
 ```applescript
 tell application "Music"
-    set sr to search library playlist 1 for "{artist}"
-    repeat with t in sr
-        if name of t is "{track_name}" and artist of t is "{artist}" then
-            duplicate t to user playlist "{playlist_name}"
-            return "ok"
-        end if
-    end repeat
-    return "not_in_library"
+    try
+        set sr to search library playlist 1 for "{escaped_artist}"
+        repeat with t in sr
+            if name of t is "{escaped_track}" and artist of t is "{escaped_artist}" then
+                duplicate t to user playlist "{escaped_playlist}"
+                return "ok"
+            end if
+        end repeat
+        return "not_in_library"
+    on error e
+        return "error: " & e
+    end try
 end tell
 ```
 
-This is the same pattern already used in lines 496-510 of `signal_experiment.py`, just executed earlier in the flow.
+All interpolated values go through `_applescript_escape()`. The `try/on error` block ensures AppleScript failures fall through to the JXA path rather than crashing.
 
-## 3. JXA NSRunLoop Fix
+**Note:** AppleScript `is` is case-insensitive but does not handle Unicode normalization. An artist stored as "Beyoncé" may not match "Beyonce" from the API. This is acceptable — the mismatch causes a fallback to JXA, not a failure. The `search` command also does substring matching, so the exact-match `if` filter is essential.
+
+### Control flow
+
+The library-first path is a **complete early-return branch** inserted at the top of `_add_track_to_named_playlist()`, before the existing snapshot/poll logic (line 442). On `"ok"` it returns `True` immediately. On `"not_in_library"` or `"error"` it falls through to the existing JXA flow unchanged.
+
+## 4. JXA NSRunLoop Fix
 
 ### Root cause
 
 `_play_store_track()` calls `player.prepareToPlay` then `player.play` and exits. `prepareToPlay` is async — it needs time to buffer the track. When osascript exits, the async preparation is cancelled. This worked historically due to timing luck; a macOS update (Darwin 25.2.0) changed the behavior.
 
-### Confirmed fix
+### Fix: poll `isPreparedToPlay` with timeout
 
-Keep the JXA script alive with `NSRunLoop` to let `prepareToPlay` complete:
+Instead of a blind fixed wait, poll `isPreparedToPlay` within the NSRunLoop with a generous timeout:
 
 ```javascript
 ObjC.import("MediaPlayer");
@@ -69,46 +114,38 @@ var descriptor = $.MPMusicPlayerStoreQueueDescriptor.alloc.initWithStoreIDs(ids)
 player.setQueueWithDescriptor(descriptor);
 player.prepareToPlay;
 
-// Keep runloop alive for prepareToPlay to complete
+// Poll until prepared or timeout (10s)
 var rl = $.NSRunLoop.currentRunLoop;
-var until = $.NSDate.dateWithTimeIntervalSinceNow(3.0);
-rl.runUntilDate(until);
+var deadline = $.NSDate.dateWithTimeIntervalSinceNow(10.0);
+while (!player.isPreparedToPlay) {
+    var step = $.NSDate.dateWithTimeIntervalSinceNow(0.25);
+    rl.runUntilDate(step);
+    if ($.NSDate.date.compare(deadline) === 2) break;  // NSOrderedDescending = past deadline
+}
 
 player.play;
 
 // Short wait for playback to register with Music.app
-var until2 = $.NSDate.dateWithTimeIntervalSinceNow(1.0);
-rl.runUntilDate(until2);
+var post = $.NSDate.dateWithTimeIntervalSinceNow(1.0);
+rl.runUntilDate(post);
 
 var state = player.playbackState;
 String(state);
 ```
 
-Verified: playback state transitions to `1` (playing), Music.app reports the correct current track.
+This exits as soon as the player is ready (typically <1s on fast connections) but allows up to 10s for slow networks. The outer 30s `_run_jxa()` timeout remains as a safety net.
 
-### Timeout
+**Note:** JXA is a legacy technology with no active Apple investment. The MediaPlayer bridge via osascript may need replacement with a Swift helper binary in a future macOS version. For now, it works.
 
-The JXA script takes ~4s (3s prepare + 1s post-play). The existing 30s timeout in `_run_jxa()` is adequate.
-
-## 4. Cross-Round Track Deduplication
+## 5. Cross-Round Track Deduplication
 
 ### Problem
 
-The build step doesn't check whether a track was offered in a prior round. As the engine converges on preferred artists, the same top tracks will resurface repeatedly.
+The build step doesn't check whether a track was offered in a prior round. As the engine converges on preferred artists, the same top tracks will resurface repeatedly. This is especially important for favorited artists, which bypass artist-level cooldown and reappear every round — track dedup is the **sole guard** against repeat tracks for these high-engagement artists.
 
-### Data source
+### Persistence
 
-`feedback_history.json` stores per-round data with artist-level feedback that includes track counts but not individual track names. However, `pre_listen_snapshot.json` keys are `(artist, track_name)` tuples, and the snapshot is replaced each round.
-
-We need a persistent record of all offered tracks. Two options:
-
-**Option A:** Add track-level detail to `feedback_history.json` rounds (each round's `artist_feedback` already exists; add a `tracks_offered` list per artist).
-
-**Option B:** Maintain a separate `offered_tracks.json` that accumulates `(artist, track)` pairs across all rounds.
-
-**Chosen: Option B.** Simpler, single-purpose, no risk of breaking existing feedback schema. The file is append-only (new tracks added each round, never removed).
-
-### Format
+A separate `offered_tracks.json` (not extending `feedback_history.json` to avoid schema coupling):
 
 ```json
 {
@@ -120,22 +157,41 @@ We need a persistent record of all offered tracks. Two options:
 }
 ```
 
-All values lowercased for consistent matching.
+All values lowercased for consistent matching. The load function converts the list to a `set` of `(artist, track)` tuples for O(1) lookup.
 
 ### Integration point
 
-In `adaptive_engine.py:_run_build()`, before the playlist-building loop (line ~858):
+In `adaptive_engine.py:_run_build()`, before the playlist-building loop:
 
 1. Load `offered_tracks.json` into a set of `(artist, track)` tuples
 2. When iterating tracks for each artist, skip any `(artist.lower(), track_name.lower())` already in the set
 3. After successful add, append to the set
-4. After the loop, save updated `offered_tracks.json`
+4. After the loop, save updated `offered_tracks.json` using atomic write (write to `.tmp`, then `os.replace()`)
 
-### Edge case: exhausted artist
+### File handling
 
-If all of an artist's top tracks have been offered before, that artist contributes zero tracks to the playlist. The artist may still appear in `top_artists` if it scores high, but the empty slot is acceptable — it does not trigger auto-blocklist (that's search-failure only), and the engine will surface other artists to fill the playlist. Over many rounds, exhausted artists naturally lose priority as fresher candidates accumulate positive feedback.
+- **Missing file:** Return empty set, log nothing (normal for first run)
+- **Corrupt JSON or wrong version:** Log warning, return empty set (do not crash)
+- **Atomic write:** Write to `offered_tracks.json.tmp`, then `os.replace()` to final path. This prevents corruption if the process crashes mid-write.
 
-## 5. Auto-Blocklist on Search Strikes
+### Exhausted artist overflow
+
+If all of an artist's top tracks have been previously offered, that artist contributes zero tracks. To prevent empty playlists as the engine converges, the build loop uses **overflow iteration** rather than a fixed slice of `top_artists`:
+
+```python
+artist_idx = 0
+slots_filled = 0
+while slots_filled < target_artist_count and artist_idx < len(ranked):
+    score, artist = ranked[artist_idx]
+    artist_idx += 1
+    added_count = try_add_tracks(artist, ...)  # skips already-offered tracks
+    if added_count > 0:
+        slots_filled += 1
+```
+
+This continues past exhausted artists to fill the playlist from lower-ranked candidates. The exhausted artist is not blocklisted (that's search-failure only) and can still contribute if new tracks appear in their catalog.
+
+## 6. Auto-Blocklist on Search Strikes
 
 ### Problem
 
@@ -156,53 +212,94 @@ A **strike counter** per artist, stored in `search_strikes.json`:
 
 ### Rules
 
-1. During playlist build, if **all tracks** for an artist get a clean "not found" from `search_itunes()` (HTTP 200, zero results or no artist match), increment that artist's strike count
-2. If **any track** is found (even if playback later fails), reset strikes to 0
-3. At **3 consecutive rounds** of all-tracks-not-found, auto-add the artist to `ai_blocklist.txt`
-4. **Do not count** as strikes: network errors, timeouts, non-200 responses from iTunes API. These return `None` from `search_itunes()` but are indistinguishable from "not found" in the current code
+1. During playlist build, track per-artist search outcomes using `SearchResult.searched_ok`. After the track loop for each artist, evaluate: if **at least one track was successfully searched** (`searched_ok=True`) and **none were found** (`store_id` is None for all), increment that artist's strike count and set `last_round` to current round.
+2. If **any track is found** (even if playback later fails), reset strikes to 0.
+3. If **all searches errored** (`searched_ok=False` for every track), do **not** count as a strike. Leave the counter unchanged.
+4. "Consecutive" means consecutive attempts, not consecutive round numbers. If an artist falls out of `top_artists` for rounds 3-10 and reappears in round 11, a prior strike count of 2 from round 2 does **not** auto-blocklist on round 11's failure. Instead, if `last_round < current_round - 1`, reset the counter to 0 before evaluating. This prevents stale strikes from accumulating across long gaps.
+5. At **3 consecutive attempts** with all-tracks-not-found, auto-add the artist to `ai_blocklist.txt`.
 
-### Distinguishing "not found" from "error"
+### Data flow for strike counting
 
-`search_itunes()` currently returns `None` for both "no results" and "request failed." To count strikes correctly, we must distinguish these two cases. Change the return to add a second value:
+`_add_track_to_named_playlist()` currently returns `bool`. To communicate search status to the strike logic in `_run_build()`, change the call structure:
 
-```python
-# New: return (store_id, was_searched) tuple
-# (None, True)  = searched successfully, not found
-# (None, False) = search failed (network error, timeout, non-200)
-# ("12345", True) = found
-```
+1. Call `search_itunes()` **in `_run_build()`** before calling `_add_track_to_named_playlist()`
+2. Pass the `SearchResult` to `_add_track_to_named_playlist()` (which no longer calls `search_itunes` itself)
+3. `_run_build()` accumulates per-artist search outcomes and evaluates strikes after each artist's track loop
 
-This is a minimal change to `search_itunes()`. All existing callers check `if store_id:` which still works since the first element is what they care about. The callers in `_add_track_to_named_playlist()` will be updated to unpack both values.
+This keeps strike logic in `_run_build()` where it belongs, with clean data flow.
+
+### Auto-blocklist write format
+
+- `ai_blocklist.txt` is one artist per line, case-insensitive (existing convention)
+- Before appending, check if the artist is already present (dedup)
+- If the file doesn't exist, create it
+- Prefix auto-added entries with a comment: `# auto-blocklisted round N: ` on the line above
+- This makes auto-blocklisted artists distinguishable from manually blocklisted ones
+
+### Recovery path
+
+Auto-blocklisted artists can be manually removed from `ai_blocklist.txt` if they later become available on Apple Music. Additionally, every 10 rounds, `_run_build()` re-tests auto-blocklisted artists with a single `search_itunes()` call. If found, automatically remove from `ai_blocklist.txt` and log a notice. This prevents permanent false positives from transient catalog gaps.
+
+### File handling
+
+Same as `offered_tracks.json`: missing → empty defaults, corrupt → log warning + empty defaults, atomic writes.
 
 ### Logging
 
-When an artist hits 3 strikes and is auto-blocklisted:
 ```
 WARNING: Auto-blocklisted "Some Artist" — not found on Apple Music for 3 consecutive rounds
+INFO: Re-checked "Some Artist" — now available on Apple Music, removed from auto-blocklist
 ```
 
-## 6. Changes Summary
+## 7. Changes Summary
 
 | File | Change |
 |------|--------|
-| `music_discovery.py:_play_store_track()` | Add NSRunLoop waits |
-| `music_discovery.py:search_itunes()` | Return `(store_id, searched_ok)` tuple |
-| `signal_experiment.py:_add_track_to_named_playlist()` | Library-first path before JXA fallback |
-| `adaptive_engine.py:_run_build()` | Load/check/save offered tracks; strike counting; auto-blocklist |
-| `adaptive_engine.py` (new helper) | `_load_offered_tracks()`, `_save_offered_tracks()`, `_load_search_strikes()`, `_save_search_strikes()` |
+| `music_discovery.py` | Add `SearchResult` dataclass |
+| `music_discovery.py:search_itunes()` | Return `SearchResult` with canonical metadata |
+| `music_discovery.py:_play_store_track()` | Poll `isPreparedToPlay` via NSRunLoop |
+| `music_discovery.py:add_track_to_playlist()` | Update to use `result.store_id` |
+| `signal_experiment.py:_add_track_to_named_playlist()` | Accept `SearchResult` param; library-first early-return path; error-handled AppleScript |
+| `adaptive_engine.py:_run_build()` | Call `search_itunes` before `_add_track_to_named_playlist`; overflow iteration; load/check/save offered tracks; strike counting; auto-blocklist; periodic re-check |
+| `adaptive_engine.py` (new helpers) | `_load_offered_tracks()`, `_save_offered_tracks()`, `_load_search_strikes()`, `_save_search_strikes()` |
 | `offered_tracks.json` (new data) | Persistent record of all tracks offered across rounds |
-| `search_strikes.json` (new data) | Per-artist consecutive-round failure counts |
+| `search_strikes.json` (new data) | Per-artist consecutive-attempt failure counts |
+| Test files | Update all `search_itunes` mocks to return `SearchResult` instances |
 
-## 7. Testing
+## 8. Testing
 
-- **Unit tests:** Library-first path (found/not-found), JXA fallback invocation, track dedup filtering, strike counting logic (increment/reset/blocklist threshold), `search_itunes` return value change
-- **Integration test:** Multi-round simulation where the same artist appears twice — verify no track overlap
-- **Live verification:** Run `--build` after fix, confirm tracks are added to playlist (resolves issue #8)
+### Unit tests
 
-## 8. What This Does NOT Change
+- **`SearchResult`:** `__bool__` returns False when `store_id` is None, True otherwise; backward compat with `if not result:` pattern
+- **Library-first path:** Mock `_run_applescript` returning `"ok"` → returns True without calling JXA; returning `"not_in_library"` → falls through to JXA; returning `"error: ..."` → falls through to JXA
+- **JXA script template:** Verify store ID is correctly interpolated into the script string
+- **Track dedup:** Load set from file, verify known track is skipped, verify unknown track passes
+- **Strike counting:**
+  - All tracks not found (searched_ok=True, store_id=None) → increment
+  - Any track found → reset to 0
+  - All searches errored (searched_ok=False) → counter unchanged
+  - Gap between attempts (`last_round < current_round - 1`) → counter resets
+  - Hit threshold 3 → artist appended to blocklist
+  - Mixed results (some found, some error) → reset due to found track
+- **Overflow iteration:** When first N artists are exhausted, playlist fills from lower-ranked candidates
+- **File handling:** Missing file → empty defaults; corrupt JSON → log + empty defaults; atomic write verifiable via temp file existence
+
+### Integration tests
+
+- Multi-round simulation: same artist in rounds 1 and 2 → zero track overlap
+- Artist with 3 consecutive strike rounds → appears in blocklist
+- Artist with 2 strikes then found → counter resets, not blocklisted
+
+### Live verification
+
+- Run `--build` after fix, confirm tracks are added to playlist (resolves issue #8)
+- Verify library-first path works for a known library track (no JXA invocation in logs)
+
+## 9. What This Does NOT Change
 
 - Affinity graph, weight learner, feedback collection — untouched
 - Scoring and ranking — untouched
 - Artist-level cooldown — still works as before, orthogonal to track dedup
 - `--feedback` mode — untouched
 - Existing `build_playlist()` in `music_discovery.py` — untouched (used by old `--playlist` mode)
+- `_applescript_escape()` — pre-existing limitation with exotic Unicode inputs acknowledged but not changed in this spec (fallback to JXA path handles mismatches)
