@@ -235,6 +235,31 @@ To:
     _play_store_track(result.store_id)
 ```
 
+In `signal_experiment.py:_add_track_to_named_playlist()` (line ~436), change:
+
+```python
+# Before:
+    store_id = search_itunes(artist, track_name)
+    if not store_id:
+        log.info(f"  Not found: {artist} — {track_name}")
+        return False
+    ...
+    _play_store_track(store_id)
+```
+
+To:
+
+```python
+    result = search_itunes(artist, track_name)
+    if not result:
+        log.info(f"  Not found: {artist} — {track_name}")
+        return False
+    ...
+    _play_store_track(result.store_id)
+```
+
+Also add `SearchResult` to the import list in the function body. This prevents temporal breakage — without this fix, the code is broken between Task 1's commit and Task 3's commit.
+
 - [ ] **Step 8: Update test mocks that return raw strings/None**
 
 In `tests/test_music_discovery.py`, update all monkeypatches of `search_itunes`:
@@ -305,11 +330,11 @@ def test_play_store_track_raises_on_jxa_failure(monkeypatch):
         md._play_store_track("12345")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify the new one fails**
 
 Run: `cd "/Users/brianhill/Scripts/Music Discovery" && python -m pytest tests/test_music_discovery.py::test_play_store_track_script_polls_is_prepared tests/test_music_discovery.py::test_play_store_track_raises_on_jxa_failure -v`
 
-Expected: FAIL (current script doesn't contain `isPreparedToPlay`)
+Expected: `test_play_store_track_script_polls_is_prepared` FAILS (current script doesn't contain `isPreparedToPlay`). `test_play_store_track_raises_on_jxa_failure` PASSES (existing behavior — this is a regression guard).
 
 - [ ] **Step 3: Update `_play_store_track()` with NSRunLoop polling**
 
@@ -348,6 +373,8 @@ String(state);
 ```
 
 Note the `{{` and `}}` — these are literal braces in an f-string.
+
+**Return type change:** Previously returned `bool` (`out == "ok"`), now returns `str` (the playback state number). All existing callers ignore the return value, so this is safe. The docstring documents the new return semantics.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -423,16 +450,21 @@ def test_library_first_falls_through_to_jxa(monkeypatch):
     search_result = md.SearchResult("12345", True, "New Artist", "New Track")
     jxa_called = {"called": False}
 
-    applescript_responses = iter([
-        ("not_in_library", 0),  # library search
-        ("", 0),                # snapshot
-        ("New Track|||New Artist", 0),  # poll (track changed)
-        ("New Track|||New Artist", 0),  # info
-        ("ok", 0),              # library add
-    ])
-
     def fake_applescript(script):
-        return next(applescript_responses)
+        """Stateful mock that handles different AppleScript contexts."""
+        if "search library" in script and "duplicate" in script:
+            # Library search (first call) or library-add-to-playlist (later)
+            if not jxa_called["called"]:
+                return "not_in_library", 0  # first time: not in library
+            return "ok", 0  # after JXA play: found and added
+        if "current track" in script:
+            if not jxa_called["called"]:
+                return "", 0  # snapshot before play
+            return "New Track|||New Artist", 0  # poll/info after play
+        if "duplicate" in script and "source" in script:
+            return "lib_ok", 0  # add to library
+        return "", 0
+
     def fake_play_store(sid):
         jxa_called["called"] = True
         return "1"
@@ -444,6 +476,7 @@ def test_library_first_falls_through_to_jxa(monkeypatch):
         search_result=search_result,
     )
     assert jxa_called["called"] is True
+    assert result is True
 
 
 def test_library_first_error_falls_through(monkeypatch):
@@ -748,6 +781,20 @@ def test_fetch_artist_catalog_returns_empty_on_error(monkeypatch):
     result = md.fetch_artist_catalog("Fleet Foxes")
     assert result == []
 
+def test_fetch_artist_catalog_fuzzy_match(monkeypatch):
+    """Includes tracks from fuzzy-matched artist names (containment)."""
+    mock_resp = type("R", (), {
+        "status_code": 200,
+        "json": lambda self: {"resultCount": 2, "results": [
+            {"kind": "song", "artistName": "The Fleet Foxes", "trackName": "Mykonos"},
+            {"kind": "song", "artistName": "Random Artist", "trackName": "Other"},
+        ]},
+    })()
+    monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
+    result = md.fetch_artist_catalog("Fleet Foxes")
+    assert len(result) == 1
+    assert result[0]["artist"] == "The Fleet Foxes"
+
 def test_fetch_artist_catalog_deduplicates(monkeypatch):
     """Deduplicates tracks with same name (case-insensitive)."""
     mock_resp = type("R", (), {
@@ -810,21 +857,25 @@ def fetch_artist_catalog(artist):
         return []
 ```
 
-- [ ] **Step 4: Update `fetch_top_tracks()` limit from 2 to 50**
+- [ ] **Step 4: Add `limit` parameter to `fetch_top_tracks()`**
 
-In `music_discovery.py` line 74, change:
-
-```python
-TRACKS_PER_ARTIST   = 2
-```
-
-To:
+In `music_discovery.py:fetch_top_tracks` (line 964), add a `limit` parameter with the current default:
 
 ```python
-TRACKS_PER_ARTIST   = 50
+def fetch_top_tracks(artist, api_key, limit=TRACKS_PER_ARTIST):
+    """Fetch top tracks for an artist from Last.fm.
+    Returns list of {"name": str, "artist": str}, or [] on failure."""
+    try:
+        resp = requests.get(LASTFM_API_URL, timeout=10, params={
+            "method":  "artist.getTopTracks",
+            "artist":  artist,
+            "api_key": api_key,
+            "format":  "json",
+            "limit":   limit,
+        })
 ```
 
-Note: `TRACKS_PER_ARTIST` is used as the Last.fm API `limit` param in `fetch_top_tracks()`. The adaptive engine's `DEFAULT_TRACKS_PER_ARTIST = 2` (in `adaptive_engine.py:44`) controls how many tracks per artist go into each playlist — that stays at 2.
+**Do NOT change the global `TRACKS_PER_ARTIST = 2`.** The old `--playlist` mode in `music_discovery.py:build_playlist()` uses `fetch_top_tracks(artist, api_key)` without a limit arg and relies on the default of 2. Changing the global would make that mode fetch 50 tracks per artist and attempt to add all of them via the slow JXA path. The adaptive engine will pass `limit=50` explicitly in Task 8.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -953,7 +1004,7 @@ def _load_offered_tracks(path: pathlib.Path) -> tuple[set, list]:
 def _save_offered_tracks(path: pathlib.Path, entries: list):
     """Save offered tracks to JSON with atomic write."""
     data = {"version": 1, "tracks": entries}
-    tmp = path.with_suffix(".json.tmp")
+    tmp = pathlib.Path(str(path) + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
 ```
@@ -1072,6 +1123,18 @@ def test_evaluate_strikes_gap_resets_counter():
     _evaluate_artist_strikes(strikes, "artist a", search_results, current_round=10)
     assert strikes["artist a"]["count"] == 1  # reset to 0, then incremented to 1
 
+def test_evaluate_strikes_mixed_error_and_found_resets():
+    """Mixed error + found results reset strikes (found takes priority)."""
+    from adaptive_engine import _evaluate_artist_strikes
+    from music_discovery import SearchResult
+    strikes = {"artist a": {"count": 2, "last_round": 4, "last_recheck": 0}}
+    search_results = [
+        SearchResult(None, False),                       # error
+        SearchResult("123", True, "Artist A", "Track"),  # found
+    ]
+    _evaluate_artist_strikes(strikes, "artist a", search_results, current_round=5)
+    assert strikes["artist a"]["count"] == 0  # reset because one was found
+
 def test_evaluate_strikes_threshold_returns_blocklist():
     """Returns True when artist hits 3 strikes."""
     from adaptive_engine import _evaluate_artist_strikes
@@ -1114,7 +1177,7 @@ def _load_search_strikes(path: pathlib.Path) -> dict:
 def _save_search_strikes(path: pathlib.Path, strikes: dict):
     """Save search strikes with atomic write."""
     data = {"version": 1, "strikes": strikes}
-    tmp = path.with_suffix(".json.tmp")
+    tmp = pathlib.Path(str(path) + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
 
@@ -1225,6 +1288,32 @@ def test_should_recheck_false_when_not_in_strikes():
     """Returns False for unknown artist."""
     from adaptive_engine import _should_recheck_artist
     assert _should_recheck_artist({}, "unknown", current_round=50) is False
+
+def test_remove_from_blocklist_removes_artist_and_comment(tmp_path):
+    """Removes artist and its auto-blocklist comment."""
+    from adaptive_engine import _remove_from_blocklist
+    path = tmp_path / "ai_blocklist.txt"
+    path.write_text("manual artist\n# auto-blocklisted round 3:\nghost artist\nanother artist\n")
+    _remove_from_blocklist(path, "ghost artist")
+    content = path.read_text()
+    assert "ghost artist" not in content
+    assert "auto-blocklisted round 3" not in content
+    assert "manual artist" in content
+    assert "another artist" in content
+
+def test_remove_from_blocklist_missing_file(tmp_path):
+    """No-op when file doesn't exist."""
+    from adaptive_engine import _remove_from_blocklist
+    path = tmp_path / "ai_blocklist.txt"
+    _remove_from_blocklist(path, "nobody")  # should not raise
+
+def test_remove_from_blocklist_artist_not_present(tmp_path):
+    """No-op when artist is not in file."""
+    from adaptive_engine import _remove_from_blocklist
+    path = tmp_path / "ai_blocklist.txt"
+    path.write_text("some artist\n")
+    _remove_from_blocklist(path, "other artist")
+    assert "some artist" in path.read_text()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1413,6 +1502,13 @@ Replace lines ~842-896 with:
 
 ```python
     playlist_size = args.playlist_size
+    top_artists = ranked[:playlist_size]  # preserve for explanation report below
+
+    log.info("\n  Top %d candidates:", len(top_artists))
+    log.info("  %-4s  %-40s  %s", "Rank", "Artist", "Score")
+    log.info("  %s", "-" * 55)
+    for i, (score, name) in enumerate(top_artists, 1):
+        log.info("  %-4d  %-40s  %.4f", i, name, score)
 
     # ── Step 9: Build playlist ───────────────────────────────────────────────
     log.info("\nStep 7: Building playlist...")
@@ -1439,9 +1535,9 @@ Replace lines ~842-896 with:
         # On-demand re-check for auto-blocklisted artists
         if artist.lower() in full_blocklist:
             if _should_recheck_artist(strikes, artist.lower(), current_round):
-                recheck = search_itunes(artist, artist)  # quick existence check
+                catalog = fetch_artist_catalog(artist)
                 strikes.setdefault(artist.lower(), {"count": 3, "last_round": 0, "last_recheck": 0})
-                if recheck:
+                if catalog:
                     _remove_from_blocklist(blocklist_path, artist)
                     full_blocklist.discard(artist.lower())
                     log.info("  Re-check passed for %s, re-entering candidate pool", artist)
@@ -1451,8 +1547,8 @@ Replace lines ~842-896 with:
             else:
                 continue
 
-        # Tiered track sourcing: Last.fm top tracks first, then iTunes catalog
-        lastfm_tracks = fetch_top_tracks(artist, api_key) if api_key else []
+        # Tiered track sourcing: Last.fm top 50 first, then iTunes catalog
+        lastfm_tracks = fetch_top_tracks(artist, api_key, limit=50) if api_key else []
         catalog_tracks = fetch_artist_catalog(artist)
 
         # Deduplicate catalog against Last.fm (by lowercased track name)
@@ -1554,11 +1650,15 @@ The section that saves offered features (lines ~887-896) currently uses `top_art
     log.info("  Saved snapshot with %d tracks.", len(snapshot))
 
     # ── Step 11: Save offered features ───────────────────────────────────────
+    # offered_tracks contains lowercased keys, but candidate_features uses
+    # original casing. Build a lowercase->original mapping from ranked.
+    lower_to_original = {name.lower(): name for _, name in ranked}
     offered_artist_names = {a for a, _ in offered_tracks}
     offered_features = {}
-    for artist in offered_artist_names:
-        if artist in candidate_features:
-            offered_features[artist] = candidate_features[artist]
+    for artist_lower in offered_artist_names:
+        original = lower_to_original.get(artist_lower, artist_lower)
+        if original in candidate_features:
+            offered_features[original] = candidate_features[original]
 ```
 
 - [ ] **Step 5: Run full test suite**
