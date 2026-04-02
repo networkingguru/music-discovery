@@ -898,7 +898,8 @@ def _run_build(cache_dir: pathlib.Path, args):
     all_candidates = set()
     for artist, neighbors in scrape_cache.items():
         all_candidates.update(n.lower() for n in neighbors.keys())
-    all_candidates -= library_artists
+    # Don't exclude library artists — they may have deep cuts worth discovering.
+    # Blocklists are applied in the scoring loop below.
 
     candidate_scores: dict = {}
     candidate_features: dict = {}
