@@ -401,6 +401,50 @@ JSON.stringify(artists);
             counts[artist] = counts.get(artist, 0) + 1
     return counts
 
+def collect_track_metadata_jxa():
+    """Collect per-track metadata via JXA: name, artist, playedCount, skippedCount, favorited, dateAdded.
+
+    Uses bulk property access for performance (single Apple Event per property).
+    Returns list of dicts, one per track in the library.
+    Never raises — returns empty list on failure.
+    """
+    script = '''
+var music = Application("Music");
+var lib = music.libraryPlaylists[0];
+var tracks = lib.tracks;
+var count = tracks.length;
+var result = [];
+if (count > 0) {
+    var names = tracks.name();
+    var artists = tracks.artist();
+    var played = tracks.playedCount();
+    var skipped = tracks.skippedCount();
+    var faved = tracks.favorited();
+    var dates = tracks.dateAdded();
+    for (var i = 0; i < count; i++) {
+        result.push({
+            name: names[i] || "",
+            artist: (artists[i] || "").toLowerCase(),
+            playedCount: played[i] || 0,
+            skippedCount: skipped[i] || 0,
+            favorited: faved[i] || false,
+            dateAdded: dates[i] ? dates[i].toISOString() : ""
+        });
+    }
+}
+JSON.stringify(result);
+'''
+    out, code = _run_jxa(script)
+    if code != 0 or not out.strip():
+        log.warning("collect_track_metadata_jxa failed (code=%d)", code)
+        return []
+    try:
+        return json.loads(out.strip())
+    except json.JSONDecodeError:
+        log.warning("collect_track_metadata_jxa: invalid JSON output")
+        return []
+
+
 def parse_md_playlist_jxa():
     """Read the Music Discovery playlist from Music.app via JXA.
     Returns (artist_set, total_tracks, unplayed_count) or None if no playlist.
