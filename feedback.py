@@ -124,7 +124,8 @@ def diff_snapshot(before: Snapshot, after: Snapshot) -> DiffResult:
       1. Newly favorited → "favorite"  (trumps all other signals)
       2. Skip count increased → "skip" with skip_delta
       3. Play count increased (not faved, not skipped) → "listen"
-      4. No change → excluded (not negative feedback)
+      4. No change → "presumed_skip" (Apple Music doesn't track counts
+         for streaming-only playlist tracks, so silence ≈ skip)
 
     Args:
         before: snapshot taken before the session.
@@ -152,7 +153,12 @@ def diff_snapshot(before: Snapshot, after: Snapshot) -> DiffResult:
             result[key] = {"outcome": "skip", "skip_delta": skip_delta}
         elif play_delta > 0:
             result[key] = {"outcome": "listen"}
-        # else: no change — excluded
+        else:
+            # No change detected — Apple Music doesn't reliably track
+            # play/skip counts for streaming-only ("shared") tracks added
+            # to playlists.  Treat as a presumed skip so we don't lose
+            # half the feedback signal.
+            result[key] = {"outcome": "presumed_skip"}
 
     return result
 
@@ -172,7 +178,7 @@ def aggregate_artist_feedback(
             If None, falls back to counting only tracks present in diffs.
 
     Returns:
-        {artist: {fave_tracks, skip_tracks, listen_tracks, tracks_offered}}
+        {artist: {fave_tracks, skip_tracks, listen_tracks, presumed_skip_tracks, tracks_offered}}
     """
     aggregated: Dict[str, Dict] = {}
 
@@ -182,6 +188,7 @@ def aggregate_artist_feedback(
                 "fave_tracks": 0,
                 "skip_tracks": 0,
                 "listen_tracks": 0,
+                "presumed_skip_tracks": 0,
                 "tracks_offered": 0,
             }
 
@@ -195,6 +202,8 @@ def aggregate_artist_feedback(
             aggregated[artist]["skip_tracks"] += 1
         elif outcome == "listen":
             aggregated[artist]["listen_tracks"] += 1
+        elif outcome == "presumed_skip":
+            aggregated[artist]["presumed_skip_tracks"] += 1
 
     # Compute tracks_offered from all_offered_tracks (authoritative)
     if all_offered_tracks is not None:

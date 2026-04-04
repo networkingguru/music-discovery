@@ -869,10 +869,14 @@ def _run_build(cache_dir: pathlib.Path, args):
 
         from affinity_graph import DISCOVERY_HALF_LIFE_DAYS
         for artist, fb in rnd.get("artist_feedback", {}).items():
+            effective_skips = (
+                fb.get("skip_tracks", 0)
+                + fb.get("presumed_skip_tracks", 0) * 0.5
+            )
             graph.inject_feedback(
                 artist,
                 fave_count=fb.get("fave_tracks", 0),
-                skip_count=fb.get("skip_tracks", 0),
+                skip_count=effective_skips,
                 listen_count=fb.get("listen_tracks", 0),
                 tracks_offered=fb.get("tracks_offered", 1),
                 days_ago=rnd_days_ago,
@@ -1281,10 +1285,14 @@ def _run_feedback(cache_dir: pathlib.Path, args):
     for artist, fb in sorted(feedback_round.artist_feedback.items()):
         faves = fb.get("fave_tracks", 0)
         skips = fb.get("skip_tracks", 0)
+        presumed = fb.get("presumed_skip_tracks", 0)
         listens = fb.get("listen_tracks", 0)
         offered = fb.get("tracks_offered", 0)
-        log.info("  %s: %d fav, %d skip, %d listen (of %d offered)",
-                 artist, faves, skips, listens, offered)
+        skip_str = f"{skips} skip"
+        if presumed > 0:
+            skip_str += f" + {presumed} presumed"
+        log.info("  %s: %d fav, %s, %d listen (of %d offered)",
+                 artist, faves, skip_str, listens, offered)
 
     # ── 10. Update affinity graph ────────────────────────────────────────────
     log.info("Updating affinity graph...")
@@ -1329,10 +1337,15 @@ def _run_feedback(cache_dir: pathlib.Path, args):
             if expunge_key in expunged:
                 log.debug("  Skipping expunged: %s", expunge_key)
                 continue
+            # Presumed skips count as half-weight confirmed skips
+            effective_skips = (
+                fb.get("skip_tracks", 0)
+                + fb.get("presumed_skip_tracks", 0) * 0.5
+            )
             graph.inject_feedback(
                 artist,
                 fave_count=fb.get("fave_tracks", 0),
-                skip_count=fb.get("skip_tracks", 0),
+                skip_count=effective_skips,
                 listen_count=fb.get("listen_tracks", 0),
                 tracks_offered=fb.get("tracks_offered", 1),
                 days_ago=rnd_days_ago,
@@ -1359,6 +1372,8 @@ def _run_feedback(cache_dir: pathlib.Path, args):
             if artist not in rnd_features or not rnd_features[artist]:
                 continue
             all_features.append(rnd_features[artist])
+            # Positive = favorited at least one track; negative = everything else
+            # (confirmed skips, presumed skips, and listens without favorites)
             label = 1 if fb.get("fave_tracks", 0) > 0 else 0
             all_labels.append(label)
 

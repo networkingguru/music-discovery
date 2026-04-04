@@ -85,10 +85,12 @@ def test_diff_snapshot_detects_listen_no_fave():
     assert diffs[("opeth", "blackwater park")]["outcome"] == "listen"
 
 
-def test_diff_snapshot_excludes_unplayed():
+def test_diff_snapshot_presumed_skip_on_no_change():
+    """Tracks with no play/skip/fave change are presumed skips (streaming track gap)."""
     before, after = _make_before_after()  # no changes
     diffs = fb.diff_snapshot(before, after)
-    assert ("opeth", "blackwater park") not in diffs
+    assert ("opeth", "blackwater park") in diffs
+    assert diffs[("opeth", "blackwater park")]["outcome"] == "presumed_skip"
 
 
 def test_diff_snapshot_favorite_trumps_skip():
@@ -134,6 +136,24 @@ def test_aggregate_artist_feedback_basic():
     assert result["opeth"]["skip_tracks"] == 0
     assert result["tool"]["skip_tracks"] == 1
     assert result["tool"]["fave_tracks"] == 0
+
+
+def test_aggregate_artist_feedback_presumed_skip():
+    """Presumed skips are counted separately from confirmed skips."""
+    diffs = {
+        ("opeth", "blackwater park"): {"outcome": "favorite"},
+        ("ghost", "he is"): {"outcome": "presumed_skip"},
+        ("ghost", "cirice"): {"outcome": "presumed_skip"},
+    }
+    all_offered = [
+        ("opeth", "blackwater park"),
+        ("ghost", "he is"),
+        ("ghost", "cirice"),
+    ]
+    result = fb.aggregate_artist_feedback(diffs, all_offered_tracks=all_offered)
+    assert result["ghost"]["presumed_skip_tracks"] == 2
+    assert result["ghost"]["skip_tracks"] == 0
+    assert result["ghost"]["fave_tracks"] == 0
 
 
 def test_aggregate_artist_feedback_no_all_offered_fallback():

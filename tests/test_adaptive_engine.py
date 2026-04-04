@@ -325,10 +325,10 @@ class TestCollectFeedbackRound:
         assert result.round_id == "2026-04-02"
         assert result.artist_feedback["opeth"]["fave_tracks"] == 1
         assert result.artist_feedback["tool"]["skip_tracks"] == 1  # one track skipped
-        # korn had no activity but IS in artist_feedback because aggregate_artist_feedback
-        # includes all offered artists when all_offered_tracks is provided
+        # korn had no play/skip change — recorded as presumed skip
         assert result.artist_feedback["korn"]["fave_tracks"] == 0
         assert result.artist_feedback["korn"]["skip_tracks"] == 0
+        assert result.artist_feedback["korn"]["presumed_skip_tracks"] == 1
         assert result.raw_features["opeth"]["favorites"] == 55.0
         assert result.raw_features["tool"]["favorites"] == 30.0
         # korn IS in raw_features because it's in artist_feedback (offered)
@@ -362,10 +362,11 @@ class TestCollectFeedbackRound:
         all_offered = list(before.keys())
 
         result = _collect_feedback_round("2026-04-02", before, after, features, all_offered)
-        # tool offered but no activity — still in artist_feedback with zero counts
+        # tool offered but no play/skip change — recorded as presumed skip
         assert "tool" in result.artist_feedback
         assert result.artist_feedback["tool"]["tracks_offered"] == 1
         assert result.artist_feedback["tool"]["fave_tracks"] == 0
+        assert result.artist_feedback["tool"]["presumed_skip_tracks"] == 1
 
     def test_round_id_preserved(self):
         """Round ID is passed through to the FeedbackRound."""

@@ -150,10 +150,14 @@ class TestMultiRoundLearning:
         # Inject feedback into graph
         graph.reset_injections()
         for artist, fb in round1.artist_feedback.items():
+            effective_skips = (
+                fb["skip_tracks"]
+                + fb.get("presumed_skip_tracks", 0) * 0.5
+            )
             graph.inject_feedback(
                 artist,
                 fave_count=fb["fave_tracks"],
-                skip_count=fb["skip_tracks"],
+                skip_count=effective_skips,
                 listen_count=fb["listen_tracks"],
                 tracks_offered=fb["tracks_offered"],
                 days_ago=0.0,
