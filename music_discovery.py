@@ -1058,12 +1058,18 @@ def search_itunes(artist, track_name):
         results = [r for r in results if r.get("kind") == "song"]
         artist_lower = artist.strip().lower()
         for r in results:
+            duration_ms = r.get("trackTimeMillis", 0)
+            if duration_ms < 90_000 or duration_ms > 600_000:
+                continue
             result_artist = r.get("artistName", "").strip().lower()
             if result_artist == artist_lower:
                 return SearchResult(str(r["trackId"]), True,
                                     r.get("artistName", ""), r.get("trackName", ""))
         # Fallback: fuzzy match (one name contains the other)
         for r in results:
+            duration_ms = r.get("trackTimeMillis", 0)
+            if duration_ms < 90_000 or duration_ms > 600_000:
+                continue
             result_artist = r.get("artistName", "").strip().lower()
             if artist_lower in result_artist or result_artist in artist_lower:
                 return SearchResult(str(r["trackId"]), True,
@@ -1098,6 +1104,9 @@ def fetch_artist_catalog(artist):
             if result_artist != artist_lower and not (
                 artist_lower in result_artist or result_artist in artist_lower
             ):
+                continue
+            duration_ms = r.get("trackTimeMillis", 0)
+            if duration_ms < 90_000 or duration_ms > 600_000:
                 continue
             track_name = r.get("trackName", "")
             key = track_name.lower()
