@@ -46,14 +46,14 @@ On startup the scraper tests Plan A against the query `"radiohead"`. If the resu
 For each library artist a dictionary of `{candidate: proximity_score}` is built from the scrape results. Candidates are then aggregated across all library artists using a weighted sum:
 
 ```
-score(candidate) = Σ  log(loved_count_i + 1) × proximity(i, candidate)
+score(candidate) = Σ  sqrt(log(loved_count_i + 1)) × proximity(i, candidate)
 ```
 
 - `loved_count_i` — number of loved tracks by library artist `i`
 - `proximity(i, candidate)` — normalized proximity score from music-map.com
 - The sum runs over every library artist `i` that has `candidate` in its similar-artist list
 
-Using `log(loved_count + 1)` compresses the influence of heavily-loved artists so that a single artist with 200 loved tracks does not completely dominate the ranking.
+Using `sqrt(log(loved_count + 1))` compresses the influence of heavily-loved artists so that a single artist with 200 loved tracks does not completely dominate the ranking.
 
 Results are returned as a list sorted by `(score, name)` descending.
 

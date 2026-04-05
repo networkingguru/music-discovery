@@ -16,7 +16,7 @@
 - Logistic regression model (`weight_learner.py`) learns signal weights from listening feedback
 - Affinity graph (`affinity_graph.py`) with propagation, pruning, and recency decay
 - Feedback module (`feedback.py`) with pre/post listening snapshots and diff-based outcome detection
-- 8 signals: favorites, play count, playlists, ratings, heavy rotation, recommendations, Last.fm similar, Last.fm loved
+- 9 signals: favorites, play count, playlists, ratings, heavy rotation, recommendations, Last.fm similar, Last.fm loved, AI heuristic
 - Multi-round learning cycle: seed → build playlist → listen → feedback → retrain → build next round
 - Cross-round track dedup via `offered_tracks` persistence
 - Library-first track add path (fast, no JXA playback needed for owned tracks)
