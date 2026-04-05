@@ -10,36 +10,25 @@ Welcome! This guide walks you through setting up and using the Music Discovery s
 
 Download and install Python from [python.org/downloads](https://www.python.org/downloads/). During installation on Windows, check the box that says **"Add Python to PATH"**.
 
-### Export your music library as XML
+### Apple Music library (macOS)
 
-The script reads your library from an XML file you export from Music.app or iTunes.
+The **adaptive engine** (recommended) reads directly from Music.app via JXA — no export needed. Just have Music.app installed with your library.
 
-**macOS (Music.app):**
-1. Open Music.app
-2. Go to **File → Library → Export Library...**
-3. Save the file somewhere you'll remember
+The **one-shot mode** on macOS also reads directly from Music.app, falling back to an XML export if JXA is unavailable.
 
-**Windows (iTunes):**
+### XML export (Windows only)
+
+On Windows, the one-shot mode requires an XML library export:
+
 1. Open iTunes
 2. Go to **File → Library → Export Library...**
 3. Save the file somewhere you'll remember
 
-### Default file locations
+Default path: `~\Music\iTunes\iTunes Music Library.xml`. If you saved it elsewhere, use `--library` to point to it.
 
-If you save the file to the default location, the script will find it automatically:
+### Library data that improves results
 
-| Platform | Default path |
-|----------|-------------|
-| macOS | `~/Music/Music/Music Library.xml` |
-| Windows | `~\Music\iTunes\iTunes Music Library.xml` |
-
-If you saved it somewhere else, you can point the script to it using the `--library` flag (see Troubleshooting).
-
-### Loved or Favorited tracks required
-
-The script identifies your favorite artists by looking for tracks you have marked as **Loved** or **Favorited** in your library. If you don't have any loved or favorited tracks, the tool has nothing to work with and will produce no results.
-
-To love a track in Music.app: right-click a song → **Love**. To favorite: click the star icon (if enabled).
+The adaptive engine uses multiple signals from your library: **favorites, play counts, playlist membership, and star ratings**. The more listening data you have, the better the recommendations. Favoriting tracks you like is the strongest signal, but play history and ratings also contribute.
 
 ---
 
@@ -281,7 +270,7 @@ Generate a new playlist with improved recommendations. Each build-listen-feedbac
 
 ### What the playlist looks like
 
-Each playlist contains tracks from approximately 50 artists (configurable with `--playlist-size`). The mix is roughly:
+Each playlist contains tracks from approximately 70 artists, targeting 100 total tracks. The mix is roughly:
 
 - **60% new artist discovery** — 2 tracks each from artists not in your library
 - **40% deep cuts** — 1 track each from artists you already know, surfacing songs you haven't heard
