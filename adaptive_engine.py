@@ -221,12 +221,7 @@ def check_cooldown(
     An artist is cooled down if it appeared in a recent round (within
     cooldown_rounds of current_round) and was NOT favorited in that round.
     """
-    for rnd in history_rounds:
-        round_id = rnd.get("round_id", 0)
-        try:
-            round_num = int(round_id)
-        except (ValueError, TypeError):
-            continue
+    for round_num, rnd in enumerate(history_rounds, start=1):
         if current_round - round_num > cooldown_rounds:
             continue
         if current_round - round_num <= 0:
@@ -716,6 +711,7 @@ def _run_build(cache_dir: pathlib.Path, args):
         load_user_blocklist,
         load_blocklist,
         _build_paths,
+        _normalize_track_name,
     )
     from signal_collectors import (
         collect_playcounts_jxa,
@@ -950,6 +946,13 @@ def _run_build(cache_dir: pathlib.Path, args):
             signal_names=signal_names,
         )
 
+        # Library artists are candidates for deep-cut discovery. The model's
+        # negative weight on "playlists" penalizes them for being close to
+        # heavily-playlisted seeds — which is exactly what makes them good
+        # candidates. Zero out the signal so it doesn't tank their score.
+        if candidate in library_artists:
+            features["playlists"] = 0.0
+
         model_score = learner.predict_proba(features)
         mm_aff = aff_mm_norm.get(candidate, 0.0)
         lfm_aff = aff_lfm_norm.get(candidate, 0.0)
@@ -1000,28 +1003,49 @@ def _run_build(cache_dir: pathlib.Path, args):
     )
 
     playlist_size = args.playlist_size
-    top_artists = ranked[:playlist_size]  # preserve for explanation report below
 
-    log.info("\n  Top %d candidates:", len(top_artists))
-    log.info("  %-4s  %-40s  %s", "Rank", "Artist", "Score")
-    log.info("  %s", "-" * 55)
+    # Stratified mix: 60% new artists (2 tracks each), 40% library deep cuts
+    # (1 track each), targeting 100 total tracks.
+    TOTAL_TRACKS = 100
+    NEW_TRACKS_PER = 2
+    LIB_TRACKS_PER = 1
+    new_target = round(TOTAL_TRACKS * 0.6) // NEW_TRACKS_PER   # 30 new artists
+    lib_target = (TOTAL_TRACKS - new_target * NEW_TRACKS_PER) // LIB_TRACKS_PER  # 40 lib artists
+
+    new_artists = [(s, a) for s, a in ranked if a not in library_artists]
+    lib_artists_ranked = [(s, a) for s, a in ranked if a in library_artists]
+    ranked = (new_artists[:new_target] + lib_artists_ranked[:lib_target])
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+
+    top_artists = ranked  # preserve for explanation report below
+    playlist_size = len(ranked)
+
+    log.info("\n  Top %d candidates (%d new × %d tracks, %d library × %d tracks = %d tracks):",
+             len(top_artists),
+             min(new_target, len(new_artists)), NEW_TRACKS_PER,
+             min(lib_target, len(lib_artists_ranked)), LIB_TRACKS_PER,
+             min(new_target, len(new_artists)) * NEW_TRACKS_PER +
+             min(lib_target, len(lib_artists_ranked)) * LIB_TRACKS_PER)
+    log.info("  %-4s  %-40s  %-8s  %s", "Rank", "Artist", "Score", "Type")
+    log.info("  %s", "-" * 65)
     for i, (score, name) in enumerate(top_artists, 1):
-        log.info("  %-4d  %-40s  %.4f", i, name, score)
+        tag = "library" if name in library_artists else "new"
+        log.info("  %-4d  %-40s  %.4f  %s", i, name, score, tag)
 
     # ── Step 9: Build playlist ───────────────────────────────────────────────
     log.info("\nStep 7: Building playlist...")
 
-    playlist_name = f"Adaptive Discovery R{current_round}"
-    tracks_per_artist = DEFAULT_TRACKS_PER_ARTIST
+    playlist_name = "Adaptive Discovery"
 
-    # Create the playlist (library-first path needs it to exist for duplicate)
+    # Delete and recreate the playlist (reuse a single name across rounds)
     from music_discovery import _run_applescript
     create_pl_script = f'''
 tell application "Music"
     try
-        if not (exists user playlist "{playlist_name}") then
-            make new user playlist with properties {{name:"{playlist_name}"}}
+        if (exists user playlist "{playlist_name}") then
+            delete user playlist "{playlist_name}"
         end if
+        make new user playlist with properties {{name:"{playlist_name}"}}
         return "ok"
     on error e
         return "error: " & e
@@ -1038,12 +1062,16 @@ end tell
 
     # Pre-seed offered_set with all library tracks so we only offer deep cuts
     # (These are NOT written to offered_tracks.json — only used for filtering)
+    # We add both raw and normalized keys so that alternate versions of the
+    # same song (e.g. "Little Lion Man" vs "Little Lion Man (Live from …)")
+    # are all caught by the dedup check.
     library_track_count = 0
     for track in track_metadata:
         t_artist = (track.get("artist") or "").lower().strip()
         t_name = (track.get("name") or "").lower().strip()
         if t_artist and t_name:
             offered_set.add((t_artist, t_name))
+            offered_set.add((t_artist, _normalize_track_name(t_name)))
             library_track_count += 1
     log.info("  Pre-seeded %d library tracks into dedup set.", library_track_count)
 
@@ -1051,9 +1079,14 @@ end tell
     artist_idx = 0
     slots_filled = 0
 
-    while slots_filled < playlist_size and artist_idx < len(ranked):
+    total_tracks_target = TOTAL_TRACKS
+
+    while slots_filled < total_tracks_target and artist_idx < len(ranked):
         _score, artist = ranked[artist_idx]
         artist_idx += 1
+
+        # Library artists get 1 track, new artists get 2
+        tracks_per_artist = LIB_TRACKS_PER if artist in library_artists else NEW_TRACKS_PER
 
         # Tiered track sourcing: Last.fm top 50 first, then iTunes catalog
         lastfm_tracks = fetch_top_tracks(artist, api_key, limit=50) if api_key else []
@@ -1078,9 +1111,11 @@ end tell
             if not track_name:
                 continue
 
-            # Cross-round dedup
+            # Cross-round dedup (check both raw and normalized to catch
+            # alternate versions like "Song (Live from …)" vs "Song")
             key = (artist.lower(), track_name.lower())
-            if key in offered_set:
+            norm_key = (artist.lower(), _normalize_track_name(track_name))
+            if key in offered_set or norm_key in offered_set:
                 continue
 
             # Search iTunes
@@ -1092,13 +1127,23 @@ end tell
                 continue
 
             # Try to add to playlist
-            if _add_track_to_named_playlist(artist, track_name, playlist_name,
-                                             search_result=result):
-                offered_tracks.add(key)
+            add_result = _add_track_to_named_playlist(
+                artist, track_name, playlist_name, search_result=result)
+            if add_result:
+                # Use actual names from the track that was added (may differ
+                # from Last.fm names due to API resolution)
+                actual_artist, actual_track = add_result
+                actual_key = (actual_artist.lower(), actual_track.lower())
+                actual_norm = (actual_artist.lower(),
+                               _normalize_track_name(actual_track))
+                offered_tracks.add(actual_key)
                 offered_set.add(key)
+                offered_set.add(norm_key)
+                offered_set.add(actual_key)
+                offered_set.add(actual_norm)
                 offered_entries.append({
-                    "artist": artist.lower(),
-                    "track": track_name.lower(),
+                    "artist": actual_artist.lower(),
+                    "track": actual_track.lower(),
                     "round": current_round,
                 })
                 added_count += 1
@@ -1114,8 +1159,9 @@ end tell
                 _auto_blocklist_artist(blocklist_path, artist, current_round)
 
         if added_count > 0:
-            log.info("  Added %d tracks for %s", added_count, artist)
-            slots_filled += 1
+            tag = "library" if artist in library_artists else "new"
+            log.info("  Added %d tracks for %s [%s]", added_count, artist, tag)
+            slots_filled += added_count
         else:
             log.warning("  No tracks added for %s", artist)
 

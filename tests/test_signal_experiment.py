@@ -444,7 +444,11 @@ def test_library_first_path_adds_directly(monkeypatch):
     jxa_called = {"called": False}
 
     def fake_applescript(script):
-        if "search library" in script:
+        # Collect phase: return matching track name
+        if "search library" in script and "duplicate" not in script:
+            return "White Winter Hymnal|||", 0
+        # Add phase: exact match found, add it
+        if "search library" in script and "duplicate" in script:
             return "ok", 0
         return "", 0
     def fake_play_store(*a):
@@ -456,7 +460,33 @@ def test_library_first_path_adds_directly(monkeypatch):
         "Fleet Foxes", "White Winter Hymnal", "Test Playlist",
         search_result=search_result,
     )
-    assert result is True
+    assert result  # (actual_artist, actual_track) tuple
+    assert jxa_called["called"] is False
+
+
+def test_library_first_fuzzy_match(monkeypatch):
+    """When library track name differs slightly, fuzzy match finds it."""
+    search_result = md.SearchResult("12345", True, "Radiohead", "Weird Fishes / Arpeggi")
+    jxa_called = {"called": False}
+
+    def fake_applescript(script):
+        # Collect phase: return library name with different spacing
+        if "search library" in script and "duplicate" not in script:
+            return "Weird Fishes/Arpeggi|||", 0
+        # Add phase
+        if "search library" in script and "duplicate" in script:
+            return "ok", 0
+        return "", 0
+    def fake_play_store(*a):
+        jxa_called["called"] = True
+
+    monkeypatch.setattr(md, "_run_applescript", fake_applescript)
+    monkeypatch.setattr(md, "_play_store_track", fake_play_store)
+    result = se._add_track_to_named_playlist(
+        "Radiohead", "Weird Fishes / Arpeggi", "Test Playlist",
+        search_result=search_result,
+    )
+    assert result == ("Radiohead", "Weird Fishes/Arpeggi")
     assert jxa_called["called"] is False
 
 
@@ -467,9 +497,13 @@ def test_library_first_falls_through_to_jxa(monkeypatch):
 
     def fake_applescript(script):
         """Stateful mock that handles different AppleScript contexts."""
-        if "search library" in script and "duplicate" in script:
+        # Collect phase: no matching tracks
+        if "search library" in script and "duplicate" not in script:
             if not jxa_called["called"]:
-                return "not_in_library", 0
+                return "", 0
+            return "New Track|||", 0
+        # Add phase after JXA
+        if "search library" in script and "duplicate" in script:
             return "ok", 0
         if "current track" in script:
             if not jxa_called["called"]:
@@ -490,7 +524,7 @@ def test_library_first_falls_through_to_jxa(monkeypatch):
         search_result=search_result,
     )
     assert jxa_called["called"] is True
-    assert result is True
+    assert result  # (actual_artist, actual_track) tuple
 
 
 def test_library_first_error_falls_through(monkeypatch):
@@ -502,7 +536,10 @@ def test_library_first_error_falls_through(monkeypatch):
     def fake_applescript(script):
         call_count["n"] += 1
         if call_count["n"] == 1:
-            return "error: some error", 0  # library search errored
+            return "error: some error", 0  # collect phase errored
+        # Collect phase after JXA finds it in library
+        if "search library" in script and "duplicate" not in script:
+            return "Track|||", 0
         if "search library" in script and "duplicate" in script:
             return "ok", 0
         if "current track" in script:
@@ -535,7 +572,11 @@ def test_backward_compat_without_search_result(monkeypatch):
         return md.SearchResult("12345", True, a, t)
 
     def fake_applescript(script):
-        if "search library" in script:
+        # Collect phase: return matching track
+        if "search library" in script and "duplicate" not in script:
+            return "Track|||", 0
+        # Add phase
+        if "search library" in script and "duplicate" in script:
             return "ok", 0
         return "", 0
 
@@ -545,4 +586,4 @@ def test_backward_compat_without_search_result(monkeypatch):
         "Artist", "Track", "Test Playlist",
     )
     assert search_called["called"] is True
-    assert result is True
+    assert result  # (actual_artist, actual_track) tuple
