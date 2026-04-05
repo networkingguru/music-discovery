@@ -420,16 +420,35 @@ end tell
     return True
 
 
+def _normalize_for_match(name):
+    """Normalize a track name for library matching.
+
+    Strips parentheticals/suffixes, collapses whitespace around punctuation,
+    and lowercases. E.g. 'Weird Fishes / Arpeggi' and 'Weird Fishes/Arpeggi'
+    both become 'weird fishes/arpeggi'.
+    """
+    import re
+    # Strip parentheticals and suffixes (same as _DEDUP_STRIP_RE)
+    s = re.sub(r"\s*[\(\[].*?[\)\]]|\s*-\s.*$", "", name)
+    # Collapse spaces around punctuation: " / " -> "/", " & " stays
+    s = re.sub(r"\s*/\s*", "/", s)
+    # Collapse runs of whitespace and strip trailing dots/punctuation
+    s = re.sub(r"\s+", " ", s).strip().rstrip(".")
+    return s.lower()
+
+
 def _add_track_to_named_playlist(artist, track_name, playlist_name, *, search_result=None):
     """Search Apple Music for a track and add it to a named playlist.
 
     If search_result is provided, uses it directly (skips search_itunes call).
     Tries library-first path (fast, no JXA) before falling back to JXA playback.
-    Returns True if added, False if not found."""
+    Returns (actual_artist, actual_track) tuple if added, False if not found.
+    The actual names may differ from the requested names due to API resolution."""
     from music_discovery import (
         search_itunes, _run_applescript, _run_jxa, _play_store_track,
         _applescript_escape, SearchResult,
     )
+    import json
     import time
 
     safe_pl = _applescript_escape(playlist_name)
@@ -447,28 +466,57 @@ def _add_track_to_named_playlist(artist, track_name, playlist_name, *, search_re
     canon_artist = search_result.canonical_artist or artist
     canon_track = search_result.canonical_track or track_name
     safe_canon_artist = _applescript_escape(canon_artist)
-    safe_canon_track = _applescript_escape(canon_track)
 
-    # ── Library-first path: try to find and add directly ────────────────
-    lib_search_script = f'''
+    # ── Library-first path: fuzzy match in Python, exact add in AS ─────
+    # Collect all tracks by this artist from the library, match in Python
+    # using normalized names, then add the matched track by its exact name.
+    lib_collect_script = f'''
 tell application "Music"
     try
         set sr to search library playlist 1 for "{safe_canon_artist}"
+        set output to ""
         repeat with t in sr
-            if name of t is "{safe_canon_track}" and artist of t is "{safe_canon_artist}" then
-                duplicate t to user playlist "{safe_pl}"
-                return "ok"
+            if artist of t is "{safe_canon_artist}" then
+                set output to output & (name of t) & "|||"
             end if
         end repeat
-        return "not_in_library"
+        return output
     on error e
         return "error: " & e
     end try
 end tell
 '''
-    lib_out, _ = _run_applescript(lib_search_script)
-    if lib_out.startswith("ok"):
-        return True
+    lib_out, _ = _run_applescript(lib_collect_script)
+    matched_lib_track = None
+    if lib_out and not lib_out.startswith("error:"):
+        lib_track_names = [n for n in lib_out.split("|||") if n]
+        target_norm = _normalize_for_match(canon_track)
+        for lib_name in lib_track_names:
+            if _normalize_for_match(lib_name) == target_norm:
+                matched_lib_track = lib_name
+                break
+
+    if matched_lib_track:
+        safe_match = _applescript_escape(matched_lib_track)
+        add_script = f'''
+tell application "Music"
+    try
+        set sr to search library playlist 1 for "{safe_canon_artist}"
+        repeat with t in sr
+            if name of t is "{safe_match}" and artist of t is "{safe_canon_artist}" then
+                duplicate t to user playlist "{safe_pl}"
+                return "ok"
+            end if
+        end repeat
+        return "not_found"
+    on error e
+        return "error: " & e
+    end try
+end tell
+'''
+        add_out, _ = _run_applescript(add_script)
+        if add_out.startswith("ok"):
+            return (canon_artist, matched_lib_track)
 
     # ── JXA fallback: play via MediaPlayer, then add ────────────────────
     snapshot_script = '''
@@ -483,7 +531,11 @@ end tell
 '''
     prev_track, _ = _run_applescript(snapshot_script)
 
-    _play_store_track(search_result.store_id)
+    try:
+        _play_store_track(search_result.store_id)
+    except RuntimeError:
+        log.warning(f"  JXA timeout for {artist} — {track_name}, skipping")
+        return False
 
     poll_script = '''
 tell application "Music"
@@ -538,7 +590,7 @@ end tell
 '''
     out, code = _run_applescript(lib_script)
     if out.startswith("ok"):
-        return True
+        return (ct_artist, ct_name)
 
     add_lib_script = '''
 tell application "Music"
@@ -575,7 +627,7 @@ end tell
         time.sleep(2 + attempt)
         out, code = _run_applescript(playlist_script)
         if out.startswith("ok"):
-            return True
+            return (ct_artist, ct_name)
 
     return False
 
