@@ -1109,7 +1109,7 @@ def test_search_itunes_returns_search_result_on_success(monkeypatch):
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"resultCount": 1, "results": [
-            {"trackId": 12345, "kind": "song", "artistName": "Radiohead", "trackName": "Creep"},
+            {"trackId": 12345, "kind": "song", "trackTimeMillis": 240000, "artistName": "Radiohead", "trackName": "Creep"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
@@ -1125,7 +1125,7 @@ def test_search_itunes_filters_music_videos(monkeypatch):
         "status_code": 200,
         "json": lambda self: {"resultCount": 2, "results": [
             {"trackId": 111, "kind": "music-video", "artistName": "Radiohead", "trackName": "Creep"},
-            {"trackId": 222, "kind": "song", "artistName": "Radiohead", "trackName": "Creep"},
+            {"trackId": 222, "kind": "song", "trackTimeMillis": 240000, "artistName": "Radiohead", "trackName": "Creep"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
@@ -1176,7 +1176,7 @@ def test_search_itunes_fuzzy_match(monkeypatch):
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"resultCount": 1, "results": [
-            {"trackId": 999, "kind": "song", "artistName": "The Black Keys", "trackName": "Lonely Boy"},
+            {"trackId": 999, "kind": "song", "trackTimeMillis": 240000, "artistName": "The Black Keys", "trackName": "Lonely Boy"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
@@ -1193,9 +1193,9 @@ def test_fetch_artist_catalog_returns_tracks(monkeypatch):
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"results": [
-            {"kind": "song",        "artistName": "Fleet Foxes", "trackName": "White Winter Hymnal"},
+            {"kind": "song", "trackTimeMillis": 240000,        "artistName": "Fleet Foxes", "trackName": "White Winter Hymnal"},
             {"kind": "music-video", "artistName": "Fleet Foxes", "trackName": "Mykonos Video"},
-            {"kind": "song",        "artistName": "Fleet Foxes", "trackName": "Ragged Wood"},
+            {"kind": "song", "trackTimeMillis": 240000,        "artistName": "Fleet Foxes", "trackName": "Ragged Wood"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
@@ -1212,8 +1212,8 @@ def test_fetch_artist_catalog_filters_wrong_artist(monkeypatch):
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"results": [
-            {"kind": "song", "artistName": "Fleet Foxes",  "trackName": "White Winter Hymnal"},
-            {"kind": "song", "artistName": "Someone Else", "trackName": "Impostor Track"},
+            {"kind": "song", "trackTimeMillis": 240000, "artistName": "Fleet Foxes",  "trackName": "White Winter Hymnal"},
+            {"kind": "song", "trackTimeMillis": 240000, "artistName": "Someone Else", "trackName": "Impostor Track"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
@@ -1236,7 +1236,7 @@ def test_fetch_artist_catalog_fuzzy_match(monkeypatch):
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"results": [
-            {"kind": "song", "artistName": "The Fleet Foxes", "trackName": "Helplessness Blues"},
+            {"kind": "song", "trackTimeMillis": 240000, "artistName": "The Fleet Foxes", "trackName": "Helplessness Blues"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
@@ -1250,8 +1250,8 @@ def test_fetch_artist_catalog_deduplicates(monkeypatch):
     mock_resp = type("R", (), {
         "status_code": 200,
         "json": lambda self: {"results": [
-            {"kind": "song", "artistName": "Fleet Foxes", "trackName": "Mykonos"},
-            {"kind": "song", "artistName": "Fleet Foxes", "trackName": "Mykonos"},
+            {"kind": "song", "trackTimeMillis": 240000, "artistName": "Fleet Foxes", "trackName": "Mykonos"},
+            {"kind": "song", "trackTimeMillis": 240000, "artistName": "Fleet Foxes", "trackName": "Mykonos"},
         ]},
     })()
     monkeypatch.setattr("requests.get", lambda *a, **kw: mock_resp)
