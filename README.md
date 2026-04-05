@@ -2,7 +2,7 @@
 
 Discover new music based on the artists you already love.
 
-This tool reads artists from tracks you've marked as **Loved** or **Favorited** in your Apple Music (or iTunes) library, finds similar artists via [music-map.com](https://www.music-map.com/), scores them by proximity, and filters out well-known artists so only genuine discoveries appear. An **adaptive engine** learns from your listening feedback each round, reweighting its scoring model so recommendations improve over time. Optionally builds an Apple Music playlist with top tracks from your discoveries.
+This tool reads your Apple Music library, finds similar artists via [music-map.com](https://www.music-map.com/), and scores them by proximity. An **adaptive engine** learns from your listening feedback each round, reweighting its scoring model so recommendations improve over time. Playlists mix new artist discovery with deep cuts from artists you already know.
 
 ## Introduction by the Designer (NetworkingGuru)
 
@@ -45,7 +45,8 @@ python adaptive_engine.py --seed
 # 2. Build: score candidates and create an Apple Music playlist
 python adaptive_engine.py --build
 
-# 3. Listen to the playlist in Apple Music, then give feedback
+# 3. Listen to the playlist in Apple Music. Favorite what you like.
+#    Then process your listening behavior:
 python adaptive_engine.py --feedback
 
 # Repeat steps 2-3. The model retrains each round.
@@ -62,8 +63,8 @@ python music_discovery.py
 ## Requirements
 
 - **Python 3.9+**
-- **macOS or Windows**
-- **Apple Music or iTunes library** exported as XML, with loved or favorited tracks (the tool discovers new artists based on artists you've loved — without any loved or favorited tracks, it has nothing to work with)
+- **macOS** for the adaptive engine (uses JXA to read Music.app directly). The one-shot mode also works on Windows with an XML library export.
+- **Apple Music library** with some listening history (favorites, play counts, playlists, and ratings are all used as signals — the more data, the better the recommendations)
 - **Last.fm API key** (optional, free) — improves results by filtering out well-known artists
 - **Apple Music subscription** (recommended for playlist building) — without one, adding tracks to your library may purchase them individually instead of streaming. See the warning in Usage below.
 
@@ -86,13 +87,14 @@ python music_discovery.py --playlist
 
 | Feature | macOS | Windows |
 |---------|-------|---------|
-| Artist discovery | Yes | Yes |
+| Adaptive engine | Yes | No |
+| One-shot discovery | Yes | Yes |
 | Last.fm filtering | Yes | Yes |
-| Playlist building | Yes (native) | Yes (XML import) |
+| Playlist building | Yes (native) | Yes (XML import, one-shot only) |
 
 ## How It Works
 
-The adaptive engine combines a logistic regression model with an affinity graph for two-channel scoring, retraining after each feedback round. See [Technical Overview](docs/how-it-works.md) for the full pipeline, scoring algorithm, and architecture.
+The original one-shot mode scrapes music-map.com for similar artists and scores them by proximity to your library. The adaptive engine adds a logistic regression model and affinity graph that retrain after each feedback round, combining new artist discovery with deep cuts from artists you already know. See [Technical Overview](docs/how-it-works.md) for the full pipeline, scoring algorithm, and architecture.
 
 ## Documentation
 
