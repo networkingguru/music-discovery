@@ -2,7 +2,7 @@
 
 Discover new music based on the artists you already love.
 
-This tool reads artists from tracks you've marked as **Loved** or **Favorited** in your Apple Music (or iTunes) library, finds similar artists via [music-map.com](https://www.music-map.com/), scores them by proximity, and filters out well-known artists so only genuine discoveries appear. Optionally builds an Apple Music playlist with top tracks from your discoveries.
+This tool reads artists from tracks you've marked as **Loved** or **Favorited** in your Apple Music (or iTunes) library, finds similar artists via [music-map.com](https://www.music-map.com/), scores them by proximity, and filters out well-known artists so only genuine discoveries appear. An **adaptive engine** learns from your listening feedback each round, reweighting its scoring model so recommendations improve over time. Optionally builds an Apple Music playlist with top tracks from your discoveries.
 
 ## Introduction by the Designer (NetworkingGuru)
 
@@ -32,6 +32,30 @@ git clone https://github.com/networkingguru/music-discovery.git
 cd music-discovery
 pip install -r requirements.txt
 playwright install chromium
+```
+
+### Adaptive Engine (recommended)
+
+The adaptive engine is a feedback loop that learns your taste over multiple rounds. Workflow: **seed → build → listen → feedback → repeat**.
+
+```bash
+# 1. Seed: collect library signals and build the initial model
+python adaptive_engine.py --seed
+
+# 2. Build: score candidates and create an Apple Music playlist
+python adaptive_engine.py --build
+
+# 3. Listen to the playlist in Apple Music, then give feedback
+python adaptive_engine.py --feedback
+
+# Repeat steps 2-3. The model retrains each round.
+```
+
+### One-shot mode
+
+If you just want a single discovery run without the feedback loop:
+
+```bash
 python music_discovery.py
 ```
 
@@ -68,7 +92,7 @@ python music_discovery.py --playlist
 
 ## How It Works
 
-See [Technical Overview](docs/how-it-works.md) for the full pipeline, scoring algorithm, and architecture.
+The adaptive engine combines a logistic regression model with an affinity graph for two-channel scoring, retraining after each feedback round. See [Technical Overview](docs/how-it-works.md) for the full pipeline, scoring algorithm, and architecture.
 
 ## Documentation
 

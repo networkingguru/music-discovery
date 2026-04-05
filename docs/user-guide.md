@@ -227,6 +227,104 @@ Then re-run the script.
 
 ---
 
+## 8. Adaptive Engine
+
+The adaptive engine is a separate tool that learns your taste over multiple rounds of listening. Where `music_discovery.py` produces a one-shot list of similar artists, the adaptive engine builds a personal model that improves each time you give it feedback.
+
+### Overview
+
+The engine works in three phases:
+
+1. **Seed** — collect signals from your library (play counts, skip counts, star ratings, loved tracks, listening history), build an artist similarity graph, and train an initial model.
+2. **Build** — score candidate artists using the model and generate an "Adaptive Discovery" playlist in Music.app.
+3. **Feedback** — after you listen to the playlist, the engine detects what you liked and what you skipped, then retrains the model with that new information.
+
+You repeat the build-listen-feedback cycle to continuously refine recommendations.
+
+### Workflow
+
+**Step 1: Initialize the engine (run once)**
+
+```bash
+python adaptive_engine.py --seed
+```
+
+This collects all available signals from your library, scrapes similarity data, and trains the initial model. Like the base script, the first run may take a while if you have a large library.
+
+**Step 2: Generate a playlist**
+
+```bash
+python adaptive_engine.py --build
+```
+
+This creates a playlist called "Adaptive Discovery" in Music.app with tracks from the highest-scoring candidates.
+
+**Step 3: Listen**
+
+Play the playlist in Music.app. Favorite the tracks you like. Skip past anything that doesn't grab you. You don't need to listen to every track — partial listening generates useful signal too.
+
+**Step 4: Process feedback**
+
+```bash
+python adaptive_engine.py --feedback
+```
+
+The engine takes a snapshot of your library state before each playlist build. When you run `--feedback`, it compares the current state against that snapshot to detect which tracks you favorited, which you skipped, and which you listened to. It then retrains the model with those signals.
+
+**Step 5: Repeat**
+
+```bash
+python adaptive_engine.py --build
+```
+
+Generate a new playlist with improved recommendations. Each build-listen-feedback cycle teaches the model more about your preferences.
+
+### What the playlist looks like
+
+Each playlist contains tracks from approximately 50 artists (configurable with `--playlist-size`). The mix is roughly:
+
+- **60% new artist discovery** — 2 tracks each from artists not in your library
+- **40% deep cuts** — 1 track each from artists you already know, surfacing songs you haven't heard
+
+The total track count lands around 100 tracks per playlist.
+
+### CLI reference
+
+| Flag | Description |
+|------|-------------|
+| `--seed` | Initialize: collect signals, build similarity graph, train initial model |
+| `--build` | Score candidates and generate the Adaptive Discovery playlist |
+| `--feedback` | Process listening feedback from the last playlist and retrain the model |
+| `--rescan` | Force re-collection of library signals (use with `--seed`) |
+| `--skip-fetch` | Skip fetching new Last.fm data; use cached data only |
+| `--playlist-size N` | Number of artists in the playlist (default: 50) |
+| `--alpha N` | Blend weight between the trained model and raw affinity scores, from 0.0 to 1.0 (default: 0.5). Higher values lean more on the model; lower values lean more on the similarity graph. |
+
+The three phase flags (`--seed`, `--build`, `--feedback`) are mutually exclusive — run one at a time.
+
+### Typical session
+
+A complete first session looks like this:
+
+```bash
+# One-time setup
+python adaptive_engine.py --seed
+
+# Round 1
+python adaptive_engine.py --build
+# ... listen to the playlist in Music.app ...
+python adaptive_engine.py --feedback
+
+# Round 2
+python adaptive_engine.py --build
+# ... listen ...
+python adaptive_engine.py --feedback
+
+# And so on
+```
+
+---
+
 ## Getting Help
 
 If you run into an issue not covered here, check the project's GitHub page or open an issue at [github.com/networkingguru/music-discovery](https://github.com/networkingguru/music-discovery).
