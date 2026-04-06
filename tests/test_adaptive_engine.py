@@ -566,6 +566,152 @@ def test_should_recheck_false_within_cooldown():
     assert _should_recheck_artist(strikes, "artist", current_round=12) is False
 
 
+# ── Task 3: _scrape_new_favorites ──────────────────────────────────────────────
+
+from unittest.mock import patch, MagicMock
+
+
+class TestScrapeNewFavorites:
+    """Tests for _scrape_new_favorites() — scrapes music-map and Last.fm
+    for newly favorited discovery artists."""
+
+    def test_scrapes_and_adds_edges(self):
+        from adaptive_engine import _scrape_new_favorites
+        from affinity_graph import AffinityGraph
+
+        graph = AffinityGraph()
+        scrape_cache = {}
+        filter_cache = {}
+        new_seeds = ["deftones"]
+
+        mock_scraper = MagicMock(return_value={
+            "tool": 0.9, "korn": 0.7, "incubus": 0.5
+        })
+
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={
+                "listeners": 5000,
+                "similar_artists": [
+                    {"name": "Tool", "match": 0.8},
+                    {"name": "Korn", "match": 0.6},
+                ],
+            }):
+                with patch("adaptive_engine.time.sleep"):
+                    _scrape_new_favorites(
+                        new_seeds=new_seeds,
+                        graph=graph,
+                        scrape_cache=scrape_cache,
+                        filter_cache=filter_cache,
+                        api_key="test_key",
+                    )
+
+        assert "deftones" in scrape_cache
+        assert scrape_cache["deftones"]["tool"] == 0.9
+        assert graph.neighbors_musicmap("deftones")
+        assert "tool" in graph.neighbors_musicmap("deftones")
+        assert "tool" in graph.neighbors_lastfm("deftones")
+        assert "deftones" in filter_cache
+
+    def test_empty_scrape_result(self):
+        from adaptive_engine import _scrape_new_favorites
+        from affinity_graph import AffinityGraph
+
+        graph = AffinityGraph()
+        scrape_cache = {}
+        filter_cache = {}
+
+        mock_scraper = MagicMock(return_value={})
+
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={}):
+                with patch("adaptive_engine.time.sleep"):
+                    _scrape_new_favorites(
+                        new_seeds=["unknown_artist"],
+                        graph=graph,
+                        scrape_cache=scrape_cache,
+                        filter_cache=filter_cache,
+                        api_key="test_key",
+                    )
+
+        assert "unknown_artist" not in scrape_cache
+
+    def test_no_api_key_skips_lastfm(self):
+        from adaptive_engine import _scrape_new_favorites
+        from affinity_graph import AffinityGraph
+
+        graph = AffinityGraph()
+        scrape_cache = {}
+        filter_cache = {}
+
+        mock_scraper = MagicMock(return_value={"tool": 0.9})
+
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data") as mock_fetch:
+                with patch("adaptive_engine.time.sleep"):
+                    _scrape_new_favorites(
+                        new_seeds=["deftones"],
+                        graph=graph,
+                        scrape_cache=scrape_cache,
+                        filter_cache=filter_cache,
+                        api_key=None,
+                    )
+
+        mock_fetch.assert_not_called()
+        assert "deftones" in scrape_cache
+
+    def test_lastfm_zero_match_and_empty_name_filtered(self):
+        from adaptive_engine import _scrape_new_favorites
+        from affinity_graph import AffinityGraph
+
+        graph = AffinityGraph()
+        scrape_cache = {}
+        filter_cache = {}
+
+        mock_scraper = MagicMock(return_value={"tool": 0.9})
+
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={
+                "similar_artists": [
+                    {"name": "Tool", "match": 0.8},
+                    {"name": "Zero", "match": 0.0},
+                    {"name": "", "match": 0.5},
+                ],
+            }):
+                with patch("adaptive_engine.time.sleep"):
+                    _scrape_new_favorites(
+                        new_seeds=["deftones"],
+                        graph=graph,
+                        scrape_cache=scrape_cache,
+                        filter_cache=filter_cache,
+                        api_key="test_key",
+                    )
+
+        lastfm_neighbors = graph.neighbors_lastfm("deftones")
+        assert "tool" in lastfm_neighbors
+        assert "zero" not in lastfm_neighbors
+        assert "" not in lastfm_neighbors
+
+    def test_detect_scraper_failure(self):
+        from adaptive_engine import _scrape_new_favorites
+        from affinity_graph import AffinityGraph
+
+        graph = AffinityGraph()
+        scrape_cache = {}
+        filter_cache = {}
+
+        with patch("music_discovery.detect_scraper", side_effect=Exception("network down")):
+            with patch("adaptive_engine.time.sleep"):
+                _scrape_new_favorites(
+                    new_seeds=["deftones"],
+                    graph=graph,
+                    scrape_cache=scrape_cache,
+                    filter_cache=filter_cache,
+                    api_key="test_key",
+                )
+
+        assert len(scrape_cache) == 0
+
+
 def test_should_recheck_false_when_not_in_strikes():
     from adaptive_engine import _should_recheck_artist
     assert _should_recheck_artist({}, "unknown", current_round=50) is False
@@ -716,3 +862,248 @@ class TestDedupNormalizationConsistency:
         assert ("radiohead", "weird fishes / arpeggi") in track_set
         # Normalized key (slash collapsed) also present
         assert ("radiohead", "weird fishes/arpeggi") in track_set
+
+
+# ── _detect_new_favorite_seeds ───────────────────────────────────────────────
+
+
+class TestDetectNewFavoriteSeeds:
+    """Tests for _detect_new_favorite_seeds() — finds discovery artists
+    that were favorited and not yet scraped."""
+
+    def test_basic_detection(self):
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = [
+            {"artist_feedback": {"deftones": {"fave_tracks": 1}, "tool": {"fave_tracks": 0}}},
+            {"artist_feedback": {"agent fresco": {"fave_tracks": 2}}},
+        ]
+        favorites = {"deftones": 3, "agent fresco": 1, "radiohead": 9}
+        scrape_cache = {"radiohead": {"thom yorke": 0.9}, "tool": {"apc": 0.8}}
+        result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert "deftones" in result
+        assert "agent fresco" in result
+        assert "radiohead" not in result  # already in scrape cache
+        assert "tool" not in result  # in scrape cache AND not in favorites
+
+    def test_case_insensitive_cache_check(self):
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = [{"artist_feedback": {"deftones": {"fave_tracks": 1}}}]
+        favorites = {"deftones": 3}
+        scrape_cache = {"Deftones": {"tool": 0.8}}  # Title case in cache
+        result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert len(result) == 0  # should recognize Deftones == deftones
+
+    def test_cap_at_10(self):
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = [{"artist_feedback": {f"artist_{i}": {"fave_tracks": 1} for i in range(15)}}]
+        favorites = {f"artist_{i}": 1 for i in range(15)}
+        scrape_cache = {}
+        result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert len(result) == 10
+
+    def test_empty_favorites(self):
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = [{"artist_feedback": {"deftones": {"fave_tracks": 1}}}]
+        favorites = {}
+        scrape_cache = {}
+        result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert len(result) == 0
+
+    def test_no_history(self):
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = []
+        favorites = {"deftones": 3}
+        scrape_cache = {}
+        result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert len(result) == 0
+
+    def test_only_favorited_discovery_artists(self):
+        """Artists offered but NOT favorited in library should not be scraped."""
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = [{"artist_feedback": {"deftones": {"fave_tracks": 1}, "tool": {"fave_tracks": 0}}}]
+        favorites = {"deftones": 3}  # tool not in library favorites
+        scrape_cache = {}
+        result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert "deftones" in result
+        assert "tool" not in result
+
+    def test_deterministic_order(self):
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = [{"artist_feedback": {"zebra": {"fave_tracks": 1}, "alpha": {"fave_tracks": 1}}}]
+        favorites = {"zebra": 1, "alpha": 1}
+        result = _detect_new_favorite_seeds(history, favorites, {})
+        assert result == ["alpha", "zebra"]
+
+
+# ── _run_reset ───────────────────────────────────────────────────────────────
+
+
+class TestRunReset:
+    """Tests for _run_reset() — wipes adaptive state, preserves caches."""
+
+    def _populate_cache_dir(self, cache_dir):
+        """Create all expected files in cache_dir for testing."""
+        delete_files = [
+            "feedback_history.json",
+            "model_weights.json",
+            "affinity_graph.json",
+            "pre_listen_snapshot.json",
+            "library_faves_snapshot.json",
+            "offered_features.json",
+            "search_strikes.json",
+            "weight_model.json",
+            "playlist_explanation.txt",
+            "post_listen_history.json",
+            "eval_manifest.json",
+            "scoring_comparison.txt",
+        ]
+        preserve_files = [
+            "offered_tracks.json",
+            "music_map_cache.json",
+            "filter_cache.json",
+            "ai_detection_log.txt",
+            "playcount_cache.json",
+            "ratings_cache.json",
+            "playlist_membership_cache.json",
+            "heavy_rotation_cache.json",
+            "recommendations_cache.json",
+            "apple_music_cache.json",
+            "rejected_scrape_cache.json",
+            "top_tracks_cache.json",
+            "blocklist_cache.json",
+            "favorites_snapshot.json",
+            "signal_wargaming_phase_a.json",
+            "signal_wargaming_recs.json",
+        ]
+        for f in delete_files + preserve_files:
+            (cache_dir / f).write_text("{}")
+        return delete_files, preserve_files
+
+    def test_deletes_correct_files(self, tmp_path):
+        from adaptive_engine import _run_reset
+        delete_files, preserve_files = self._populate_cache_dir(tmp_path)
+        _run_reset(tmp_path)
+        for f in delete_files:
+            assert not (tmp_path / f).exists(), f"Should have been deleted: {f}"
+        for f in preserve_files:
+            assert (tmp_path / f).exists(), f"Should have been preserved: {f}"
+
+    def test_handles_missing_files(self, tmp_path):
+        from adaptive_engine import _run_reset
+        (tmp_path / "feedback_history.json").write_text("{}")
+        _run_reset(tmp_path)
+        assert not (tmp_path / "feedback_history.json").exists()
+
+    def test_preserves_offered_tracks(self, tmp_path):
+        from adaptive_engine import _run_reset
+        self._populate_cache_dir(tmp_path)
+        (tmp_path / "offered_tracks.json").write_text(
+            '{"version": 1, "tracks": [{"artist": "deftones", "track": "change", "round": 1}]}'
+        )
+        _run_reset(tmp_path)
+        assert (tmp_path / "offered_tracks.json").exists()
+        import json
+        data = json.loads((tmp_path / "offered_tracks.json").read_text())
+        assert len(data["tracks"]) == 1
+
+
+# ── Task 5: Integration and adversarial tests ──────────────────────────────────
+
+
+class TestSeedInjectionIntegration:
+    """Integration tests: full flow from detection through graph update."""
+
+    def test_full_flow_detection_to_graph(self):
+        """Simulate: artist offered in round 1, user favorites it,
+        then _detect + _scrape should add edges to graph."""
+        from adaptive_engine import _detect_new_favorite_seeds, _scrape_new_favorites
+        from affinity_graph import AffinityGraph
+
+        history = [
+            {"artist_feedback": {
+                "caligula's horse": {"fave_tracks": 2, "skip_tracks": 0,
+                                     "listen_tracks": 0, "presumed_skip_tracks": 0,
+                                     "tracks_offered": 2},
+            }},
+        ]
+        favorites = {"caligula's horse": 2}
+        scrape_cache = {"radiohead": {"thom yorke": 0.9}}
+        filter_cache = {}
+        graph = AffinityGraph()
+
+        # Detection
+        new_seeds = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert new_seeds == ["caligula's horse"]
+
+        # Scraping (mocked)
+        mock_scraper = MagicMock(return_value={
+            "haken": 0.95, "leprous": 0.85, "tesseract": 0.7
+        })
+
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={
+                "similar_artists": [{"name": "Haken", "match": 0.9}],
+            }):
+                with patch("adaptive_engine.time.sleep"):
+                    _scrape_new_favorites(
+                        new_seeds=new_seeds,
+                        graph=graph,
+                        scrape_cache=scrape_cache,
+                        filter_cache=filter_cache,
+                        api_key="test_key",
+                    )
+
+        # Verify graph has new edges
+        mm_neighbors = graph.neighbors_musicmap("caligula's horse")
+        assert "haken" in mm_neighbors
+        assert "leprous" in mm_neighbors
+        assert "tesseract" in mm_neighbors
+
+        lfm_neighbors = graph.neighbors_lastfm("caligula's horse")
+        assert "haken" in lfm_neighbors
+
+        # Verify scrape cache has new entry
+        assert "caligula's horse" in scrape_cache
+        assert len(scrape_cache) == 2  # radiohead + caligula's horse
+
+        # Verify original cache entry unchanged
+        assert scrape_cache["radiohead"] == {"thom yorke": 0.9}
+
+    def test_scrape_failure_partial_success(self):
+        """If one artist fails to scrape, others should still succeed."""
+        from adaptive_engine import _scrape_new_favorites
+        from affinity_graph import AffinityGraph
+
+        graph = AffinityGraph()
+        scrape_cache = {}
+        filter_cache = {}
+
+        def flaky_scraper(artist):
+            if artist == "bad_artist":
+                raise ConnectionError("timeout")
+            return {"neighbor": 0.8}
+
+        with patch("music_discovery.detect_scraper", return_value=flaky_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={}):
+                with patch("adaptive_engine.time.sleep"):
+                    _scrape_new_favorites(
+                        new_seeds=["bad_artist", "good_artist"],
+                        graph=graph,
+                        scrape_cache=scrape_cache,
+                        filter_cache=filter_cache,
+                        api_key=None,
+                    )
+
+        assert "bad_artist" not in scrape_cache
+        assert "good_artist" in scrape_cache
+
+    def test_already_in_cache_not_re_scraped(self):
+        """Artist already in scrape cache should not be detected."""
+        from adaptive_engine import _detect_new_favorite_seeds
+
+        history = [{"artist_feedback": {"deftones": {"fave_tracks": 1}}}]
+        favorites = {"deftones": 3}
+        scrape_cache = {"deftones": {"tool": 0.9}}
+
+        result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+        assert len(result) == 0

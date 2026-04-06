@@ -1304,11 +1304,182 @@ def _collect_feedback_round(round_id, before_snapshot, after_snapshot,
     )
 
 
+MAX_SCRAPE_PER_ROUND = 10
+
+
+def _detect_new_favorite_seeds(
+    history: list,
+    favorites: dict,
+    scrape_cache: dict,
+) -> list[str]:
+    """Find discovery artists that the user favorited and haven't been scraped yet.
+
+    Returns a list of artist names (lowercase), capped at MAX_SCRAPE_PER_ROUND.
+
+    An artist qualifies if:
+    - It appeared in any round's artist_feedback (was offered as a discovery candidate)
+    - It is present in the current library favorites dict
+      (both feedback history and parse_library_jxa use lowercase keys)
+    - It is NOT already a key in the scrape cache (case-insensitive)
+    """
+    # All artists ever offered in discovery
+    offered = set()
+    for rnd in history:
+        offered.update(rnd.get("artist_feedback", {}).keys())
+
+    # Case-insensitive set of already-scraped artists
+    scraped_lower = {k.lower() for k in scrape_cache}
+
+    new_seeds = [
+        artist for artist in offered
+        if artist in favorites and artist.lower() not in scraped_lower
+    ]
+
+    # Deterministic order (alphabetical) so results are reproducible
+    new_seeds.sort()
+
+    if len(new_seeds) > MAX_SCRAPE_PER_ROUND:
+        log.info("  Capping new seed scraping at %d (found %d).",
+                 MAX_SCRAPE_PER_ROUND, len(new_seeds))
+        new_seeds = new_seeds[:MAX_SCRAPE_PER_ROUND]
+
+    return new_seeds
+
+
+def _scrape_new_favorites(
+    new_seeds: list[str],
+    graph,
+    scrape_cache: dict,
+    filter_cache: dict,
+    api_key: str | None,
+):
+    """Scrape music-map and Last.fm for newly favorited discovery artists.
+
+    Adds edges to graph, updates scrape_cache and filter_cache in-place.
+    Logs progress for user visibility. Failures are non-fatal per-artist.
+    """
+    if not new_seeds:
+        return
+
+    log.info("Detected %d newly favorited discovery artist(s): %s",
+             len(new_seeds), ", ".join(new_seeds))
+
+    try:
+        from music_discovery import detect_scraper, fetch_filter_data
+        scrape_fn = detect_scraper()
+    except Exception as e:
+        log.error("  Could not initialise scraper: %s. Skipping seed expansion.", e)
+        return
+
+    candidates_before = sum(len(v) for v in scrape_cache.values() if isinstance(v, dict))
+    mm_edges_added = 0
+    lfm_edges_added = 0
+
+    for artist in new_seeds:
+        # ── Music-map scraping ──────────────────────────────────
+        try:
+            similar = scrape_fn(artist)
+        except Exception as e:
+            log.warning("  Scrape failed for %s: %s", artist, e)
+            time.sleep(1.0)
+            continue
+
+        if not similar:
+            log.info("  Scraping music-map for %s... no results", artist)
+            time.sleep(1.0)
+            continue
+
+        log.info("  Scraping music-map for %s... found %d similar artists",
+                 artist, len(similar))
+
+        scrape_cache[artist] = similar
+        for neighbor, weight in similar.items():
+            graph.add_edge_musicmap(artist.lower(), neighbor.lower(), weight)
+            mm_edges_added += 1
+
+        time.sleep(1.0)
+
+        # ── Last.fm similar artists ─────────────────────────────
+        if api_key:
+            try:
+                filter_entry = fetch_filter_data(artist, api_key)
+            except Exception as e:
+                log.warning("  Last.fm fetch failed for %s: %s", artist, e)
+                filter_entry = {}
+
+            if filter_entry:
+                filter_cache[artist] = filter_entry
+                for sim in filter_entry.get("similar_artists", []):
+                    sim_name = sim.get("name", "").strip().lower()
+                    match_score = float(sim.get("match", 0))
+                    if sim_name and match_score > 0:
+                        graph.add_edge_lastfm(artist.lower(), sim_name, match_score)
+                        lfm_edges_added += 1
+
+            time.sleep(1.0)
+
+    candidates_after = sum(len(v) for v in scrape_cache.values() if isinstance(v, dict))
+    log.info("  Seed expansion complete: +%d music-map edges, +%d Last.fm edges. "
+             "Candidate pool: %d → %d",
+             mm_edges_added, lfm_edges_added, candidates_before, candidates_after)
+
+
+def _run_reset(cache_dir: pathlib.Path):
+    """Wipe adaptive state for a clean re-seed. Preserves expensive caches."""
+    log.info("=== Reset Mode ===")
+
+    delete_files = [
+        "feedback_history.json",
+        "model_weights.json",
+        "affinity_graph.json",
+        "pre_listen_snapshot.json",
+        "library_faves_snapshot.json",
+        "offered_features.json",
+        "search_strikes.json",
+        "weight_model.json",
+        "playlist_explanation.txt",
+        "post_listen_history.json",
+        "eval_manifest.json",
+        "scoring_comparison.txt",
+    ]
+
+    # Count what we're losing for the summary
+    fb_path = cache_dir / "feedback_history.json"
+    if fb_path.exists():
+        try:
+            fb_data = json.loads(fb_path.read_text(encoding="utf-8"))
+            rounds = fb_data.get("rounds", [])
+            total_artists = sum(
+                len(r.get("artist_feedback", {})) for r in rounds
+            )
+            log.info("  Deleting feedback from %d rounds (%d artist evaluations).",
+                     len(rounds), total_artists)
+        except Exception:
+            pass
+
+    deleted = 0
+    for filename in delete_files:
+        path = cache_dir / filename
+        if path.exists():
+            path.unlink()
+            log.info("  Deleted: %s", filename)
+            deleted += 1
+        else:
+            log.debug("  Skipped (not found): %s", filename)
+
+    log.info("Reset complete: %d files deleted.", deleted)
+    log.info("Preserved: caches (music_map, filter, signal), offered_tracks, ai_detection_log.")
+    log.info("\nRun --seed to rebuild the adaptive model from your current library.")
+
+
 def _run_feedback(cache_dir: pathlib.Path, args):
     """Feedback mode: collect listening feedback, update graph, refit model."""
     from datetime import datetime, timezone
 
-    from music_discovery import parse_library_jxa, collect_track_metadata_jxa
+    from music_discovery import (
+        parse_library_jxa, collect_track_metadata_jxa,
+        load_cache, save_cache, load_dotenv,
+    )
     from feedback import (
         load_snapshot, create_snapshot, save_snapshot,
         diff_snapshot, aggregate_artist_feedback, FeedbackRound,
@@ -1435,9 +1606,37 @@ def _run_feedback(cache_dir: pathlib.Path, args):
                 half_life_days=DISCOVERY_HALF_LIFE_DAYS,
             )
 
+    # ── 10c. Scrape newly favorited discovery artists ───────────────────
+    load_dotenv()
+    api_key = os.environ.get("LASTFM_API_KEY", "").strip() or None
+
+    scrape_cache_path = cache_dir / "music_map_cache.json"
+    filter_cache_path = cache_dir / "filter_cache.json"
+    scrape_cache = load_cache(scrape_cache_path)
+    filter_cache = load_cache(filter_cache_path)
+
+    new_seeds = _detect_new_favorite_seeds(history, favorites, scrape_cache)
+    if new_seeds:
+        _scrape_new_favorites(
+            new_seeds=new_seeds,
+            graph=graph,
+            scrape_cache=scrape_cache,
+            filter_cache=filter_cache,
+            api_key=api_key,
+        )
+    else:
+        log.info("No newly favorited discovery artists to scrape.")
+
     graph.propagate()
     graph.prune()
     graph.save(cache_dir / "affinity_graph.json")
+
+    # Save caches AFTER graph.save() so interruption doesn't leave
+    # artists in cache but missing from graph (they'd never be re-scraped)
+    if new_seeds:
+        save_cache(scrape_cache, scrape_cache_path)
+        save_cache(filter_cache, filter_cache_path)
+
     log.info("  Affinity graph updated and saved.")
 
     # ── 11. Refit model on ALL accumulated training data ─────────────────────
@@ -1538,6 +1737,11 @@ def main():
         action="store_true",
         help="Process listening feedback and retrain",
     )
+    group.add_argument(
+        "--reset",
+        action="store_true",
+        help="Wipe adaptive state (feedback, model, graph) for clean re-seed",
+    )
     parser.add_argument(
         "--rescan",
         action="store_true",
@@ -1575,7 +1779,9 @@ def main():
         os.environ.get("CACHE_DIR", "~/.cache/music_discovery")
     ).expanduser().resolve()
 
-    if args.seed:
+    if args.reset:
+        _run_reset(cache_dir)
+    elif args.seed:
         _run_seed(cache_dir, args)
     elif args.build:
         _run_build(cache_dir, args)
