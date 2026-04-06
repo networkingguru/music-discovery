@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-04-06-seed-injection-design.md`
 
+**Review findings incorporated:**
+- Patch paths fixed: use `music_discovery.X` not `adaptive_engine.X` for locally-imported functions
+- Cache saves moved after `graph.save()` to prevent Ctrl+C inconsistency
+- Additional files added to reset preserve/delete audit
+- Task 6 manual sequence fixed: reset→seed→build (not reset→seed→feedback)
+- `import json as _json` removed, uses module-level `json`
+- Empty-name assertion added to Last.fm filter test
+- `from unittest.mock import` added to all test tasks that need it
+
 ---
 
 ### Task 1: `_run_reset()` function and CLI flag
@@ -41,6 +50,9 @@ class TestRunReset:
             "search_strikes.json",
             "weight_model.json",
             "playlist_explanation.txt",
+            "post_listen_history.json",
+            "eval_manifest.json",
+            "scoring_comparison.txt",
         ]
         # Files that should be PRESERVED
         preserve_files = [
@@ -54,6 +66,12 @@ class TestRunReset:
             "heavy_rotation_cache.json",
             "recommendations_cache.json",
             "apple_music_cache.json",
+            "rejected_scrape_cache.json",
+            "top_tracks_cache.json",
+            "blocklist_cache.json",
+            "favorites_snapshot.json",
+            "signal_wargaming_phase_a.json",
+            "signal_wargaming_recs.json",
         ]
         for f in delete_files + preserve_files:
             (cache_dir / f).write_text("{}")
@@ -112,14 +130,16 @@ def _run_reset(cache_dir: pathlib.Path):
         "search_strikes.json",
         "weight_model.json",
         "playlist_explanation.txt",
+        "post_listen_history.json",
+        "eval_manifest.json",
+        "scoring_comparison.txt",
     ]
 
     # Count what we're losing for the summary
     fb_path = cache_dir / "feedback_history.json"
     if fb_path.exists():
         try:
-            import json as _json
-            fb_data = _json.loads(fb_path.read_text(encoding="utf-8"))
+            fb_data = json.loads(fb_path.read_text(encoding="utf-8"))
             rounds = fb_data.get("rounds", [])
             total_artists = sum(
                 len(r.get("artist_feedback", {})) for r in rounds
@@ -156,15 +176,13 @@ group.add_argument(
 )
 ```
 
-In the dispatch block (around line 1555), add before the existing if/elif chain:
+In the dispatch block (around line 1555), change `if args.seed:` to add reset before it:
 
 ```python
 if args.reset:
     _run_reset(cache_dir)
 elif args.seed:
 ```
-
-(Change the existing `if args.seed:` to `elif args.seed:`.)
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -212,7 +230,7 @@ class TestDetectNewFavoriteSeeds:
         assert "deftones" in result
         assert "agent fresco" in result
         assert "radiohead" not in result  # already in scrape cache
-        assert "tool" not in result  # already in scrape cache
+        assert "tool" not in result  # in scrape cache AND not in favorites
 
     def test_case_insensitive_cache_check(self):
         from adaptive_engine import _detect_new_favorite_seeds
@@ -255,6 +273,13 @@ class TestDetectNewFavoriteSeeds:
         result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
         assert "deftones" in result
         assert "tool" not in result
+
+    def test_deterministic_order(self):
+        from adaptive_engine import _detect_new_favorite_seeds
+        history = [{"artist_feedback": {"zebra": {"fave_tracks": 1}, "alpha": {"fave_tracks": 1}}}]
+        favorites = {"zebra": 1, "alpha": 1}
+        result = _detect_new_favorite_seeds(history, favorites, {})
+        assert result == ["alpha", "zebra"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -282,6 +307,7 @@ def _detect_new_favorite_seeds(
     An artist qualifies if:
     - It appeared in any round's artist_feedback (was offered as a discovery candidate)
     - It is present in the current library favorites dict
+      (both feedback history and parse_library_jxa use lowercase keys)
     - It is NOT already a key in the scrape cache (case-insensitive)
     """
     # All artists ever offered in discovery
@@ -311,7 +337,7 @@ def _detect_new_favorite_seeds(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_adaptive_engine.py::TestDetectNewFavoriteSeeds -v`
-Expected: 6 PASS
+Expected: 7 PASS
 
 - [ ] **Step 5: Commit**
 
@@ -327,6 +353,8 @@ git commit -m "feat: detect newly favorited discovery artists for seed injection
 **Files:**
 - Modify: `adaptive_engine.py` (add `_scrape_new_favorites()`)
 - Test: `tests/test_adaptive_engine.py`
+
+**Note on mocking:** `_scrape_new_favorites()` imports `detect_scraper` and `fetch_filter_data` locally from `music_discovery`. Tests must patch at the definition site: `music_discovery.detect_scraper` and `music_discovery.fetch_filter_data`, NOT `adaptive_engine.X`.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -353,8 +381,8 @@ class TestScrapeNewFavorites:
             "tool": 0.9, "korn": 0.7, "incubus": 0.5
         })
 
-        with patch("adaptive_engine.detect_scraper", return_value=mock_scraper):
-            with patch("adaptive_engine.fetch_filter_data", return_value={
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={
                 "listeners": 5000,
                 "similar_artists": [
                     {"name": "Tool", "match": 0.8},
@@ -394,8 +422,8 @@ class TestScrapeNewFavorites:
 
         mock_scraper = MagicMock(return_value={})
 
-        with patch("adaptive_engine.detect_scraper", return_value=mock_scraper):
-            with patch("adaptive_engine.fetch_filter_data", return_value={}):
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={}):
                 with patch("adaptive_engine.time.sleep"):
                     _scrape_new_favorites(
                         new_seeds=["unknown_artist"],
@@ -418,8 +446,8 @@ class TestScrapeNewFavorites:
 
         mock_scraper = MagicMock(return_value={"tool": 0.9})
 
-        with patch("adaptive_engine.detect_scraper", return_value=mock_scraper):
-            with patch("adaptive_engine.fetch_filter_data") as mock_fetch:
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data") as mock_fetch:
                 with patch("adaptive_engine.time.sleep"):
                     _scrape_new_favorites(
                         new_seeds=["deftones"],
@@ -435,7 +463,7 @@ class TestScrapeNewFavorites:
         # Musicmap edges still added
         assert "deftones" in scrape_cache
 
-    def test_lastfm_zero_match_filtered(self):
+    def test_lastfm_zero_match_and_empty_name_filtered(self):
         from adaptive_engine import _scrape_new_favorites
         from affinity_graph import AffinityGraph
 
@@ -445,8 +473,8 @@ class TestScrapeNewFavorites:
 
         mock_scraper = MagicMock(return_value={"tool": 0.9})
 
-        with patch("adaptive_engine.detect_scraper", return_value=mock_scraper):
-            with patch("adaptive_engine.fetch_filter_data", return_value={
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={
                 "similar_artists": [
                     {"name": "Tool", "match": 0.8},
                     {"name": "Zero", "match": 0.0},
@@ -465,6 +493,7 @@ class TestScrapeNewFavorites:
         lastfm_neighbors = graph.neighbors_lastfm("deftones")
         assert "tool" in lastfm_neighbors
         assert "zero" not in lastfm_neighbors  # match == 0.0 filtered
+        assert "" not in lastfm_neighbors  # empty name filtered
 
     def test_detect_scraper_failure(self):
         from adaptive_engine import _scrape_new_favorites
@@ -474,7 +503,7 @@ class TestScrapeNewFavorites:
         scrape_cache = {}
         filter_cache = {}
 
-        with patch("adaptive_engine.detect_scraper", side_effect=Exception("network down")):
+        with patch("music_discovery.detect_scraper", side_effect=Exception("network down")):
             with patch("adaptive_engine.time.sleep"):
                 # Should not raise
                 _scrape_new_favorites(
@@ -599,7 +628,7 @@ git commit -m "feat: scrape newly favorited discovery artists for seed expansion
 
 - [ ] **Step 1: Add imports to `_run_feedback()`**
 
-At line 1311, after the existing `from music_discovery import parse_library_jxa, collect_track_metadata_jxa`, add:
+At line 1311, expand the existing `from music_discovery import` to:
 
 ```python
 from music_discovery import (
@@ -608,9 +637,7 @@ from music_discovery import (
 )
 ```
 
-(The `detect_scraper` and `fetch_filter_data` imports are inside `_scrape_new_favorites` already.)
-
-- [ ] **Step 2: Add scraping block after feedback replay**
+- [ ] **Step 2: Add scraping block after feedback replay, before `graph.propagate()`**
 
 After line 1436 (the end of the feedback replay loop) and before line 1438 (`graph.propagate()`), insert:
 
@@ -633,18 +660,32 @@ After line 1436 (the end of the feedback replay loop) and before line 1438 (`gra
             filter_cache=filter_cache,
             api_key=api_key,
         )
-        save_cache(scrape_cache, scrape_cache_path)
-        save_cache(filter_cache, filter_cache_path)
     else:
         log.info("No newly favorited discovery artists to scrape.")
 ```
 
-- [ ] **Step 3: Run the full test suite**
+Note: `history` is available from line 1363, `favorites` from line 1393. Both are in scope at this insertion point.
+
+- [ ] **Step 3: Move cache saves AFTER `graph.save()` to prevent Ctrl+C inconsistency**
+
+After the existing `graph.save(cache_dir / "affinity_graph.json")` at line 1440, add:
+
+```python
+    # Save caches AFTER graph.save() so interruption doesn't leave
+    # artists in cache but missing from graph (they'd never be re-scraped)
+    if new_seeds:
+        save_cache(scrape_cache, scrape_cache_path)
+        save_cache(filter_cache, filter_cache_path)
+```
+
+This ensures the invariant: if an artist is in the scrape cache, its edges are in the graph.
+
+- [ ] **Step 4: Run the full test suite**
 
 Run: `pytest tests/ -x -q`
-Expected: All pass (the new code path won't be exercised by existing tests since they mock everything, but no regressions)
+Expected: All pass
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add adaptive_engine.py
@@ -663,6 +704,9 @@ git commit -m "feat: wire seed injection into --feedback mode"
 Add to `tests/test_adaptive_engine.py`:
 
 ```python
+from unittest.mock import patch, MagicMock
+
+
 class TestSeedInjectionIntegration:
     """Integration tests: full flow from detection through graph update."""
 
@@ -693,8 +737,8 @@ class TestSeedInjectionIntegration:
             "haken": 0.95, "leprous": 0.85, "tesseract": 0.7
         })
 
-        with patch("adaptive_engine.detect_scraper", return_value=mock_scraper):
-            with patch("adaptive_engine.fetch_filter_data", return_value={
+        with patch("music_discovery.detect_scraper", return_value=mock_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={
                 "similar_artists": [{"name": "Haken", "match": 0.9}],
             }):
                 with patch("adaptive_engine.time.sleep"):
@@ -731,17 +775,13 @@ class TestSeedInjectionIntegration:
         scrape_cache = {}
         filter_cache = {}
 
-        call_count = 0
-
         def flaky_scraper(artist):
-            nonlocal call_count
-            call_count += 1
             if artist == "bad_artist":
                 raise ConnectionError("timeout")
             return {"neighbor": 0.8}
 
-        with patch("adaptive_engine.detect_scraper", return_value=flaky_scraper):
-            with patch("adaptive_engine.fetch_filter_data", return_value={}):
+        with patch("music_discovery.detect_scraper", return_value=flaky_scraper):
+            with patch("music_discovery.fetch_filter_data", return_value={}):
                 with patch("adaptive_engine.time.sleep"):
                     _scrape_new_favorites(
                         new_seeds=["bad_artist", "good_artist"],
@@ -787,7 +827,13 @@ git commit -m "test: integration and adversarial tests for seed injection"
 
 ### Task 6: Manual verification with live data
 
-- [ ] **Step 1: Verify `--reset` works**
+**Note:** This task modifies live data (`--reset` deletes feedback history). It requires explicit user approval before execution. Back up `~/.cache/music_discovery/` first if desired.
+
+- [ ] **Step 1: Get user approval to run against live data**
+
+Ask the user: "Ready to run --reset against your live cache? This will delete feedback history, model, and graph (offered_tracks preserved). Proceed?"
+
+- [ ] **Step 2: Verify `--reset` works**
 
 Run: `python3 adaptive_engine.py --reset`
 
@@ -809,23 +855,17 @@ Verify `offered_tracks.json` still exists:
 ls -la ~/.cache/music_discovery/offered_tracks.json
 ```
 
-- [ ] **Step 2: Run `--seed` to rebuild**
+- [ ] **Step 3: Run `--seed` to rebuild**
 
 Run: `python3 adaptive_engine.py --seed`
 
 Should complete without errors, rebuilding graph and model from current library.
 
-- [ ] **Step 3: Run `--feedback` (should detect no new favorites since history was wiped)**
-
-Run: `python3 adaptive_engine.py --feedback`
-
-Expected: "No newly favorited discovery artists to scrape." (since feedback history is empty after reset, no discovery artists exist yet)
-
 - [ ] **Step 4: Run `--build` to generate round 1 playlist**
 
 Run: `python3 adaptive_engine.py --build`
 
-Should produce a playlist. Verify it looks reasonable.
+Should produce a playlist. Verify it looks reasonable and the candidate count reflects the full scrape cache.
 
 - [ ] **Step 5: Commit any adjustments**
 
