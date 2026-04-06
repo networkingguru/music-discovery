@@ -47,13 +47,20 @@ DEFAULT_TRACKS_PER_ARTIST = 2
 # ── Offered tracks persistence ───────────────────────────────────────────────
 
 def _load_offered_tracks(path: pathlib.Path) -> tuple[set, list]:
-    """Load previously offered tracks. Returns (set of (artist, track), raw entries list)."""
+    """Load previously offered tracks. Returns (set of (artist, track), raw entries list).
+
+    Adds both raw and normalized keys to the set so cross-round dedup catches
+    formatting variants (e.g. 'Weird Fishes / Arpeggi' vs 'Weird Fishes/Arpeggi')."""
     if not path.exists():
         return set(), []
     try:
+        from signal_experiment import _normalize_for_match
         data = json.loads(path.read_text(encoding="utf-8"))
         entries = data.get("tracks", [])
-        track_set = {(t["artist"], t["track"]) for t in entries}
+        track_set = set()
+        for t in entries:
+            track_set.add((t["artist"], t["track"]))
+            track_set.add((t["artist"], _normalize_for_match(t["track"])))
         return track_set, entries
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         log.warning("Corrupt offered_tracks.json, starting fresh: %s", e)
@@ -711,7 +718,6 @@ def _run_build(cache_dir: pathlib.Path, args):
         load_user_blocklist,
         load_blocklist,
         _build_paths,
-        _normalize_track_name,
     )
     from signal_collectors import (
         collect_playcounts_jxa,
@@ -722,7 +728,7 @@ def _run_build(cache_dir: pathlib.Path, args):
         collect_lastfm_loved,
         _make_user_session,
     )
-    from signal_experiment import _add_track_to_named_playlist
+    from signal_experiment import _add_track_to_named_playlist, _normalize_for_match
     from feedback import create_snapshot, save_snapshot
 
     load_dotenv()
@@ -1062,16 +1068,17 @@ end tell
 
     # Pre-seed offered_set with all library tracks so we only offer deep cuts
     # (These are NOT written to offered_tracks.json — only used for filtering)
-    # We add both raw and normalized keys so that alternate versions of the
-    # same song (e.g. "Little Lion Man" vs "Little Lion Man (Live from …)")
-    # are all caught by the dedup check.
+    # We add raw, parenthetical-stripped, AND fuzzy-normalized keys so that
+    # alternate versions are caught regardless of formatting differences
+    # (e.g. "Weird Fishes / Arpeggi" vs "Weird Fishes/Arpeggi",
+    #  "Little Lion Man (Live from …)" vs "Little Lion Man").
     library_track_count = 0
     for track in track_metadata:
         t_artist = (track.get("artist") or "").lower().strip()
         t_name = (track.get("name") or "").lower().strip()
         if t_artist and t_name:
             offered_set.add((t_artist, t_name))
-            offered_set.add((t_artist, _normalize_track_name(t_name)))
+            offered_set.add((t_artist, _normalize_for_match(t_name)))
             library_track_count += 1
     log.info("  Pre-seeded %d library tracks into dedup set.", library_track_count)
 
@@ -1092,9 +1099,10 @@ end tell
         lastfm_tracks = fetch_top_tracks(artist, api_key, limit=50) if api_key else []
         catalog_tracks = fetch_artist_catalog(artist)
 
-        # Deduplicate catalog against Last.fm (by lowercased track name)
-        lastfm_names = {t["name"].lower() for t in lastfm_tracks}
-        unique_catalog = [t for t in catalog_tracks if t["name"].lower() not in lastfm_names]
+        # Deduplicate catalog against Last.fm (by normalized track name to catch
+        # formatting differences like "Weird Fishes/ Arpeggi" vs "Weird Fishes / Arpeggi")
+        lastfm_names = {_normalize_for_match(t["name"]) for t in lastfm_tracks}
+        unique_catalog = [t for t in catalog_tracks if _normalize_for_match(t["name"]) not in lastfm_names]
 
         all_tracks = lastfm_tracks + unique_catalog
         artist_search_results = []
@@ -1111,10 +1119,11 @@ end tell
             if not track_name:
                 continue
 
-            # Cross-round dedup (check both raw and normalized to catch
-            # alternate versions like "Song (Live from …)" vs "Song")
+            # Cross-round dedup (check both raw and fuzzy-normalized to catch
+            # alternate versions like "Song (Live from …)" vs "Song" and
+            # formatting differences like "Weird Fishes / Arpeggi" vs "Weird Fishes/Arpeggi")
             key = (artist.lower(), track_name.lower())
-            norm_key = (artist.lower(), _normalize_track_name(track_name))
+            norm_key = (artist.lower(), _normalize_for_match(track_name))
             if key in offered_set or norm_key in offered_set:
                 continue
 
@@ -1135,7 +1144,7 @@ end tell
                 actual_artist, actual_track = add_result
                 actual_key = (actual_artist.lower(), actual_track.lower())
                 actual_norm = (actual_artist.lower(),
-                               _normalize_track_name(actual_track))
+                               _normalize_for_match(actual_track))
                 offered_tracks.add(actual_key)
                 offered_set.add(key)
                 offered_set.add(norm_key)
@@ -1173,6 +1182,34 @@ end tell
 
     log.info("  Playlist '%s': %d tracks for %d artists (of %d ranked).",
              playlist_name, len(offered_tracks), slots_filled, len(ranked))
+
+    # ── Post-build playlist count verification ──────────────────────────────
+    verify_script = f'''
+tell application "Music"
+    try
+        if (exists user playlist "{playlist_name}") then
+            return count of tracks of user playlist "{playlist_name}"
+        else
+            return -1
+        end if
+    on error
+        return -1
+    end try
+end tell
+'''
+    count_out, _ = _run_applescript(verify_script)
+    try:
+        actual_count = int(count_out)
+    except (ValueError, TypeError):
+        actual_count = -1
+    if actual_count < 0:
+        log.warning("Could not verify final playlist count.")
+    elif actual_count != slots_filled:
+        log.warning("PLAYLIST COUNT MISMATCH: expected %d tracks but playlist has %d. "
+                     "Possible iCloud sync issue or external modification.",
+                     slots_filled, actual_count)
+    else:
+        log.info("  Playlist verified: %d tracks.", actual_count)
 
     # ── Step 10: Save pre-listen snapshot ────────────────────────────────────
     log.info("Step 8: Saving pre-listen snapshot...")

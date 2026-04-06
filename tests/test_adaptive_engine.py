@@ -408,7 +408,8 @@ def test_load_offered_tracks_valid(tmp_path):
     track_set, entries = _load_offered_tracks(path)
     assert ("fleet foxes", "white winter hymnal") in track_set
     assert ("fleet foxes", "mykonos") in track_set
-    assert len(track_set) == 2
+    # Set includes both raw and normalized keys (may overlap for simple names)
+    assert len(track_set) >= 2
     assert len(entries) == 2
 
 
@@ -593,3 +594,125 @@ def test_remove_from_blocklist_artist_not_present(tmp_path):
     path.write_text("some artist\n")
     _remove_from_blocklist(path, "other artist")
     assert "some artist" in path.read_text()
+
+
+# ── Dedup normalization consistency tests ─────────────────────────────────────
+
+
+class TestDedupNormalizationConsistency:
+    """Verify that the dedup pre-seeding and check use the same normalization
+    as the library-first matching path, so tracks that would be found in the
+    library are also caught by the dedup filter.
+
+    Regression: 'Weird Fishes/Arpeggi' (library) vs 'Weird Fishes / Arpeggi'
+    (iTunes API) bypassed dedup but was found by library-first path, causing
+    already-owned tracks to be added to the playlist.
+    """
+
+    def test_slash_spacing_caught_by_preseed(self):
+        """Library 'Weird Fishes/Arpeggi' should block iTunes 'Weird Fishes / Arpeggi'."""
+        from signal_experiment import _normalize_for_match
+
+        library_name = "Weird Fishes/Arpeggi"
+        itunes_name = "Weird Fishes / Arpeggi"
+        lastfm_name = "Weird Fishes/ Arpeggi"
+
+        # Pre-seeding uses _normalize_for_match on library track name
+        lib_norm = _normalize_for_match(library_name)
+
+        # Dedup check uses _normalize_for_match on incoming track name
+        itunes_norm = _normalize_for_match(itunes_name)
+        lastfm_norm = _normalize_for_match(lastfm_name)
+
+        assert lib_norm == itunes_norm, (
+            f"iTunes variant should match library: {lib_norm!r} vs {itunes_norm!r}")
+        assert lib_norm == lastfm_norm, (
+            f"Last.fm variant should match library: {lib_norm!r} vs {lastfm_norm!r}")
+
+    def test_catalog_lastfm_dedup_catches_slash_variants(self):
+        """Last.fm 'Weird Fishes/ Arpeggi' and iTunes 'Weird Fishes / Arpeggi'
+        should be treated as the same track in catalog-vs-lastfm dedup."""
+        from signal_experiment import _normalize_for_match
+
+        lastfm = "Weird Fishes/ Arpeggi"
+        itunes = "Weird Fishes / Arpeggi"
+
+        assert _normalize_for_match(lastfm) == _normalize_for_match(itunes)
+
+    def test_parenthetical_variants_still_caught(self):
+        """Existing parenthetical normalization should still work."""
+        from signal_experiment import _normalize_for_match
+
+        assert _normalize_for_match("Little Lion Man") == _normalize_for_match(
+            "Little Lion Man (Live from Bonnaroo)")
+        assert _normalize_for_match("Creep") == _normalize_for_match(
+            "Creep (Acoustic)")
+
+    def test_suffix_variants_still_caught(self):
+        """Dash-suffix normalization should still work."""
+        from signal_experiment import _normalize_for_match
+
+        assert _normalize_for_match("Song Title") == _normalize_for_match(
+            "Song Title - Remastered 2023")
+
+    def test_trailing_dots_stripped(self):
+        """Trailing dots should be stripped (e.g. Radiohead's Hail to the Thief tracks)."""
+        from signal_experiment import _normalize_for_match
+
+        assert _normalize_for_match("2 + 2 = 5") == _normalize_for_match(
+            "2 + 2 = 5.")
+
+    def test_preseed_and_dedup_use_same_normalizer(self):
+        """Simulate the full pre-seed → dedup flow with slash variants."""
+        from signal_experiment import _normalize_for_match
+
+        # Simulate pre-seeding: library has "Weird Fishes/Arpeggi"
+        offered_set = set()
+        lib_artist = "radiohead"
+        lib_track = "weird fishes/arpeggi"
+        offered_set.add((lib_artist, lib_track))
+        offered_set.add((lib_artist, _normalize_for_match(lib_track)))
+
+        # Simulate dedup check: Last.fm returns "Weird Fishes/ Arpeggi"
+        incoming_track = "Weird Fishes/ Arpeggi"
+        key = (lib_artist, incoming_track.lower())
+        norm_key = (lib_artist, _normalize_for_match(incoming_track))
+
+        assert key in offered_set or norm_key in offered_set, (
+            f"Dedup should catch slash variant. key={key!r}, norm_key={norm_key!r}, "
+            f"offered has {[(a, t) for a, t in offered_set if a == lib_artist]}"
+        )
+
+    def test_preseed_blocks_itunes_variant(self):
+        """Simulate the full flow with iTunes API's space-around-slash format."""
+        from signal_experiment import _normalize_for_match
+
+        offered_set = set()
+        lib_artist = "radiohead"
+        lib_track = "weird fishes/arpeggi"
+        offered_set.add((lib_artist, lib_track))
+        offered_set.add((lib_artist, _normalize_for_match(lib_track)))
+
+        # iTunes returns "Weird Fishes / Arpeggi"
+        incoming = "Weird Fishes / Arpeggi"
+        key = (lib_artist, incoming.lower())
+        norm_key = (lib_artist, _normalize_for_match(incoming))
+
+        assert key in offered_set or norm_key in offered_set
+
+    def test_load_offered_tracks_includes_normalized_keys(self, tmp_path):
+        """Cross-round persistence should include normalized keys so slash
+        variants offered in round N are caught in round N+1."""
+        from adaptive_engine import _load_offered_tracks, _save_offered_tracks
+
+        path = tmp_path / "offered_tracks.json"
+        entries = [
+            {"artist": "radiohead", "track": "weird fishes / arpeggi", "round": 1},
+        ]
+        _save_offered_tracks(path, entries)
+        track_set, _ = _load_offered_tracks(path)
+
+        # Raw key present
+        assert ("radiohead", "weird fishes / arpeggi") in track_set
+        # Normalized key (slash collapsed) also present
+        assert ("radiohead", "weird fishes/arpeggi") in track_set
