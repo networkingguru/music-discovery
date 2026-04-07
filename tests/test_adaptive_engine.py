@@ -846,6 +846,35 @@ class TestDedupNormalizationConsistency:
 
         assert key in offered_set or norm_key in offered_set
 
+    def test_post_resolution_dedup_catches_misspelled_lastfm_name(self):
+        """iTunes can resolve a misspelled Last.fm name to a canonical track
+        already in the library. The post-resolution dedup must catch this.
+
+        Real case: Last.fm has "Don't Stop Believing" (misspelled), iTunes
+        resolves to "Don't Stop Believin' (2024 Remaster)" which is in the
+        library as "Don't Stop Believin'"."""
+        from signal_experiment import _normalize_for_match
+
+        offered_set = set()
+        lib_artist = "journey"
+        lib_track = "don't stop believin'"
+        offered_set.add((lib_artist, lib_track))
+        offered_set.add((lib_artist, _normalize_for_match(lib_track)))
+
+        # Last.fm returns misspelled name — pre-filter misses it
+        lastfm_name = "Don't Stop Believing"
+        key = (lib_artist, lastfm_name.lower())
+        norm_key = (lib_artist, _normalize_for_match(lastfm_name))
+        assert key not in offered_set and norm_key not in offered_set, \
+            "Pre-filter should NOT catch the misspelled variant (that's the bug)"
+
+        # iTunes resolves to canonical name — post-resolution check catches it
+        canonical_track = "Don't Stop Believin' (2024 Remaster)"
+        canon_key = (lib_artist, canonical_track.lower())
+        canon_norm = (lib_artist, _normalize_for_match(canonical_track))
+        assert canon_key in offered_set or canon_norm in offered_set, \
+            "Post-resolution dedup must catch the canonical name"
+
     def test_load_offered_tracks_includes_normalized_keys(self, tmp_path):
         """Cross-round persistence should include normalized keys so slash
         variants offered in round N are caught in round N+1."""

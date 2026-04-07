@@ -1173,6 +1173,20 @@ end tell
             if not result:
                 continue
 
+            # Post-resolution dedup: iTunes may resolve a misspelled Last.fm
+            # name to a canonical track already in the library (e.g. Last.fm
+            # "Don't Stop Believing" → iTunes "Don't Stop Believin'")
+            canon_artist = (result.canonical_artist or artist).lower()
+            canon_track = result.canonical_track or track_name
+            canon_key = (canon_artist, canon_track.lower())
+            canon_norm = (canon_artist, _normalize_for_match(canon_track))
+            if canon_key in offered_set or canon_norm in offered_set:
+                log.debug("  Skipped %s — %s (canonical match after iTunes "
+                          "resolution from '%s')",
+                          result.canonical_artist, result.canonical_track,
+                          track_name)
+                continue
+
             # Try to add to playlist
             add_result = _add_track_to_named_playlist(
                 artist, track_name, playlist_name, search_result=result)
@@ -1188,6 +1202,8 @@ end tell
                 offered_set.add(norm_key)
                 offered_set.add(actual_key)
                 offered_set.add(actual_norm)
+                offered_set.add(canon_key)
+                offered_set.add(canon_norm)
                 offered_entries.append({
                     "artist": actual_artist.lower(),
                     "track": actual_track.lower(),
