@@ -856,6 +856,38 @@ def _clean_bio_length(bio_content):
     text = re.sub(r"\s*Read more on Last\.fm\.?\s*$", "", text, flags=re.IGNORECASE)
     return len(text.strip())
 
+def fetch_similar_artists(artist, api_key, limit=50):
+    """Fetch similar artists from Last.fm artist.getSimilar (single request).
+
+    Returns list of {"name": str, "match": float}, or [] on failure.
+    Much faster than fetch_filter_data() — no search step, no MusicBrainz.
+    Uses artist.getSimilar (not getInfo) to get real match scores."""
+    try:
+        resp = requests.get(LASTFM_API_URL, timeout=10, params={
+            "method":  "artist.getSimilar",
+            "artist":  artist,
+            "api_key": api_key,
+            "format":  "json",
+            "limit":   limit,
+        })
+        if resp.status_code != 200:
+            return []
+        similar_raw = resp.json().get("similarartists", {}).get("artist", [])
+        result = []
+        for s in similar_raw:
+            name = s.get("name", "").strip()
+            try:
+                match = float(s.get("match", 0))
+            except (ValueError, TypeError):
+                match = 0.0
+            if name:
+                result.append({"name": name, "match": match})
+        return result
+    except Exception as e:
+        log.debug(f"fetch_similar_artists failed for '{artist}': {e}")
+        return []
+
+
 def fetch_filter_data(artist, api_key):
     """Fetch Last.fm listener count, bio/tags, and MusicBrainz debut year/type for an artist.
     Uses artist.search first to resolve the canonical name, then artist.getInfo
