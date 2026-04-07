@@ -1054,7 +1054,11 @@ def _run_build(cache_dir: pathlib.Path, args):
 
     new_artists = [(s, a) for s, a in ranked if a not in library_artists]
     lib_artists_ranked = [(s, a) for s, a in ranked if a in library_artists]
-    ranked = (new_artists[:new_target] + lib_artists_ranked[:lib_target])
+    # Take 50% extra candidates as buffer so the build loop can backfill
+    # when artists produce 0 tracks (not found on Apple Music, all deduped, etc.)
+    new_buf = min(len(new_artists), int(new_target * 1.5))
+    lib_buf = min(len(lib_artists_ranked), int(lib_target * 1.5))
+    ranked = (new_artists[:new_buf] + lib_artists_ranked[:lib_buf])
     ranked.sort(key=lambda x: (-x[0], x[1]))
 
     top_artists = ranked  # preserve for explanation report below
