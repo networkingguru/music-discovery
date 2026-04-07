@@ -367,6 +367,7 @@ def _run_seed(cache_dir: pathlib.Path, args):
         load_cache,
         save_cache,
         fetch_filter_data,
+        fetch_similar_artists,
         check_ai_artist,
         load_ai_blocklist,
         load_ai_allowlist,
@@ -456,33 +457,66 @@ def _run_seed(cache_dir: pathlib.Path, args):
     log.info("Step 3: Collecting Last.fm similar artists for library artists...")
 
     lfm_edges = 0
-    fetched = 0
+
+    # Separate artists into cached (have similar_artists) and need-fetch
+    need_fetch = []
     for artist in library_artists:
-        # Check if we already have similar data in filter_cache
-        entry = filter_cache.get(artist, {})
-        similar = entry.get("similar_artists")
+        entry = filter_cache.get(artist)
+        if entry is not None:
+            similar = entry.get("similar_artists")
+            if similar:
+                for sim in similar:
+                    sim_name = sim.get("name", "").strip().lower()
+                    match_score = float(sim.get("match", 0))
+                    if sim_name and match_score > 0:
+                        graph.add_edge_lastfm(artist, sim_name, match_score)
+                        lfm_edges += 1
+        elif not args.skip_fetch:
+            need_fetch.append(artist)
 
-        if similar is None and not args.skip_fetch:
-            # Fetch from Last.fm
-            log.info("  Fetching filter data for '%s'...", artist)
-            new_entry = fetch_filter_data(artist, api_key)
-            if new_entry:
-                filter_cache[artist] = new_entry
-                similar = new_entry.get("similar_artists", [])
+    if need_fetch:
+        log.info("  %d library artists need Last.fm similar data (3 parallel workers)...",
+                 len(need_fetch))
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        fetched = 0
+        errors = 0
+
+        def _fetch_one(artist_name):
+            return artist_name, fetch_similar_artists(artist_name, api_key)
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(_fetch_one, a): a for a in need_fetch}
+            for future in as_completed(futures):
+                try:
+                    artist_name, similar = future.result()
+                except Exception as e:
+                    errors += 1
+                    continue
+
+                if similar:
+                    # Merge into existing entry or create minimal entry
+                    entry = filter_cache.get(artist_name, {})
+                    entry["similar_artists"] = similar
+                    filter_cache[artist_name] = entry
+                    for sim in similar:
+                        sim_name = sim.get("name", "").strip().lower()
+                        match_score = float(sim.get("match", 0))
+                        if sim_name and match_score > 0:
+                            graph.add_edge_lastfm(artist_name, sim_name, match_score)
+                            lfm_edges += 1
+
                 fetched += 1
-                time.sleep(1.2)  # Rate limiting
+                if fetched % 50 == 0:
+                    save_cache(filter_cache, paths["filter_cache"])
+                    log.info("  Checkpoint: %d/%d fetched, %d Last.fm edges so far.",
+                             fetched, len(need_fetch), lfm_edges)
 
-        if similar:
-            for sim in similar:
-                sim_name = sim.get("name", "").strip().lower()
-                match_score = float(sim.get("match", 0))
-                if sim_name and match_score > 0:
-                    graph.add_edge_lastfm(artist, sim_name, match_score)
-                    lfm_edges += 1
-
-    if fetched > 0:
-        log.info("  Fetched filter data for %d new artists.", fetched)
         save_cache(filter_cache, paths["filter_cache"])
+        log.info("  Fetched similar data for %d artists (%d errors).", fetched, errors)
+    elif args.skip_fetch:
+        log.info("  Skipping Last.fm fetch (--skip_fetch).")
     log.info("  Added %d Last.fm similar edges.", lfm_edges)
 
     # Save graph
