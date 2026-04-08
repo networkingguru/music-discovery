@@ -115,7 +115,8 @@ _DEDUP_STRIP_RE = re.compile(r"\s*[\(\[].*?[\)\]]|\s*-\s.*$")
 _VARIANT_TRACK_RE = re.compile(
     r"[\(\[](Live|Remix|Re-Recorded|Acoustic|Demo|Radio Edit|"
     r"Instrumental|Karaoke|Single Edit|Club Mix|"
-    r"Extended|Sessions|Outtakes|Take \d+|Mixed|Bonus)",
+    r"Extended|Sessions|Outtakes|Take \d+|Mixed|Bonus|"
+    r"\w+\s+Mix|From\b.*\bSoundtrack)",
     re.IGNORECASE,
 )
 

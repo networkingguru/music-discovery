@@ -432,8 +432,8 @@ def _normalize_for_match(name):
     s = re.sub(r"\s*[\(\[].*?[\)\]]|\s*-\s.*$", "", name)
     # Collapse spaces around punctuation: " / " -> "/", " & " stays
     s = re.sub(r"\s*/\s*", "/", s)
-    # Collapse runs of whitespace and strip trailing dots/punctuation
-    s = re.sub(r"\s+", " ", s).strip().rstrip(".")
+    # Collapse runs of whitespace and strip trailing punctuation
+    s = re.sub(r"\s+", " ", s).strip().rstrip(".?!,")
     return s.lower()
 
 
