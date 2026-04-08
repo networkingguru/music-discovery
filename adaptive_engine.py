@@ -1315,8 +1315,9 @@ end tell
     _save_offered_tracks(offered_path, offered_entries)
     _save_search_strikes(strikes_path, strikes)
 
+    round_artists = {e["artist"] for e in offered_entries if e.get("round") == current_round}
     log.info("  Playlist '%s': %d tracks for %d artists (of %d ranked).",
-             playlist_name, len(offered_tracks), slots_filled, len(ranked))
+             playlist_name, slots_filled, len(round_artists), len(ranked))
 
     # ── Post-build playlist count verification ──────────────────────────────
     verify_script = f'''

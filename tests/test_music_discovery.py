@@ -2687,6 +2687,34 @@ class TestIsOriginalRecording:
         r = self._make_result(track_name="Blue Monday (Extended)")
         assert md._is_original_recording(r) is False
 
+    def test_soundtrack_track_name(self):
+        """Soundtrack parenthetical should be caught."""
+        r = self._make_result(track_name='Night Fever (From "Saturday Night Fever" Soundtrack)')
+        assert md._is_original_recording(r) is False
+
+    def test_named_mix_track_name(self):
+        """Named mix variants like (US Mix) should be caught."""
+        r = self._make_result(track_name="You Just Haven't Earned It Yet, Baby (US Mix)")
+        assert md._is_original_recording(r) is False
+
+    def test_dub_mix_track_name(self):
+        r = self._make_result(track_name="Blue Monday (Dub Mix)")
+        assert md._is_original_recording(r) is False
+
+    def test_christmas_track_name(self):
+        """Seasonal content filtered from playlist."""
+        r = self._make_result(track_name="Holly Jolly Christmas")
+        assert md._is_original_recording(r) is False
+
+    def test_christmas_collection_name(self):
+        r = self._make_result(track_name="White Christmas",
+                              collection_name="Christmas")
+        assert md._is_original_recording(r) is False
+
+    def test_xmas_track_name(self):
+        r = self._make_result(track_name="Merry Xmas Everybody")
+        assert md._is_original_recording(r) is False
+
     # --- ALLOWED cases (should return True) ---
 
     def test_remastered_is_allowed(self):
@@ -2786,13 +2814,15 @@ class TestSearchItunesOriginalPreference:
         result = md.search_itunes("Journey", "Don't Stop Believin'")
         assert result.store_id == "2"
 
-    def test_falls_back_to_compilation_when_no_original(self, monkeypatch):
+    def test_returns_nothing_when_no_original(self, monkeypatch):
+        """No fallback — if only compilations exist, return no result."""
         compilation = self._song(1, "Journey", "Don't Stop Believin'",
                                  collection="Greatest Hits", track_count=16)
         monkeypatch.setattr("music_discovery.requests.get",
                             lambda *a, **kw: _fake_itunes_response([compilation]))
         result = md.search_itunes("Journey", "Don't Stop Believin'")
-        assert result.store_id == "1"
+        assert result.store_id is None
+        assert result.searched_ok is True
 
     def test_prefers_exact_artist_original_over_fuzzy_original(self, monkeypatch):
         fuzzy = self._song(1, "The Alan Parsons Project", "Eye in the Sky",
@@ -2845,8 +2875,8 @@ class TestFetchArtistCatalogOriginalPreference:
         assert "Open Arms" in names
         assert "Faithfully" not in names
 
-    def test_soft_fallback_when_all_filtered(self, monkeypatch):
-        """If all tracks are non-original, return them anyway (soft fallback)."""
+    def test_returns_empty_when_all_filtered(self, monkeypatch):
+        """No fallback — if all tracks are non-original, return empty."""
         songs = [
             self._song("Journey", "Don't Stop Believin'", collection="Greatest Hits"),
             self._song("Journey", "Faithfully", collection="Greatest Hits"),
@@ -2854,7 +2884,7 @@ class TestFetchArtistCatalogOriginalPreference:
         monkeypatch.setattr("music_discovery.requests.get",
                             lambda *a, **kw: _fake_itunes_response(songs))
         tracks = md.fetch_artist_catalog("Journey")
-        assert len(tracks) == 2
+        assert len(tracks) == 0
 
     def test_filter_before_dedup_preserves_originals(self, monkeypatch):
         """Compilation version arrives first, original second. Original must survive."""

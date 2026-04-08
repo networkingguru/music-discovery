@@ -115,7 +115,8 @@ _DEDUP_STRIP_RE = re.compile(r"\s*[\(\[].*?[\)\]]|\s*-\s.*$")
 _VARIANT_TRACK_RE = re.compile(
     r"[\(\[](Live|Remix|Re-Recorded|Acoustic|Demo|Radio Edit|"
     r"Instrumental|Karaoke|Single Edit|Club Mix|"
-    r"Extended|Sessions|Outtakes|Take \d+|Mixed|Bonus)",
+    r"Extended|Sessions|Outtakes|Take \d+|Mixed|Bonus|"
+    r"\w+\s+Mix|\w+\s+Remix|From\b[^)]*\bSoundtrack)",
     re.IGNORECASE,
 )
 
@@ -125,6 +126,13 @@ _COMPILATION_ALBUM_RE = re.compile(
     r"\d+\s+Hits|DJ\s+Mix|Lullaby|Renditions|"
     r"Live\s+at|Live\s+from|Live\s+in|Live\s+Tour|"
     r"Unplugged|MTV|Now\s+That'?s)\b",
+    re.IGNORECASE,
+)
+
+# Regex: seasonal/novelty content in track or collection name
+_SEASONAL_RE = re.compile(
+    r"\b(Christmas|Xmas|Santa|Jingle\s+Bell|Silent\s+Night|"
+    r"Rudolph|Snowman|Winter\s+Wonderland|Noel|Feliz\s+Navidad)\b",
     re.IGNORECASE,
 )
 
@@ -1118,6 +1126,10 @@ def _is_original_recording(result: dict) -> bool:
     if track_count > 35:
         return False
 
+    # 5. Seasonal/novelty content (Christmas songs etc.)
+    if _SEASONAL_RE.search(track_name) or _SEASONAL_RE.search(collection_name):
+        return False
+
     return True
 
 
@@ -1139,31 +1151,26 @@ def search_itunes(artist, track_name):
         results = [r for r in results if r.get("kind") == "song"]
         artist_lower = artist.strip().lower()
 
-        # Partition into original and fallback (compilation/live/remix)
-        originals, fallbacks = [], []
-        for r in results:
-            (originals if _is_original_recording(r) else fallbacks).append(r)
+        # Only consider original studio recordings (no fallback to compilations/live)
+        originals = [r for r in results if _is_original_recording(r)]
 
-        # Search order: original exact, original fuzzy, fallback exact, fallback fuzzy
-        for pool in (originals, fallbacks):
-            # Exact artist match
-            for r in pool:
-                duration_ms = r.get("trackTimeMillis", 0)
-                if duration_ms < 90_000 or duration_ms > 600_000:
-                    continue
-                result_artist = r.get("artistName", "").strip().lower()
-                if result_artist == artist_lower:
-                    return SearchResult(str(r["trackId"]), True,
-                                        r.get("artistName", ""), r.get("trackName", ""))
-            # Fuzzy artist match
-            for r in pool:
-                duration_ms = r.get("trackTimeMillis", 0)
-                if duration_ms < 90_000 or duration_ms > 600_000:
-                    continue
-                result_artist = r.get("artistName", "").strip().lower()
-                if artist_lower in result_artist or result_artist in artist_lower:
-                    return SearchResult(str(r["trackId"]), True,
-                                        r.get("artistName", ""), r.get("trackName", ""))
+        # Exact artist match first, then fuzzy
+        for r in originals:
+            duration_ms = r.get("trackTimeMillis", 0)
+            if duration_ms < 90_000 or duration_ms > 600_000:
+                continue
+            result_artist = r.get("artistName", "").strip().lower()
+            if result_artist == artist_lower:
+                return SearchResult(str(r["trackId"]), True,
+                                    r.get("artistName", ""), r.get("trackName", ""))
+        for r in originals:
+            duration_ms = r.get("trackTimeMillis", 0)
+            if duration_ms < 90_000 or duration_ms > 600_000:
+                continue
+            result_artist = r.get("artistName", "").strip().lower()
+            if artist_lower in result_artist or result_artist in artist_lower:
+                return SearchResult(str(r["trackId"]), True,
+                                    r.get("artistName", ""), r.get("trackName", ""))
         return SearchResult(None, searched_ok=True)
     except Exception as e:
         log.debug(f"search_itunes failed for '{artist} - {track_name}': {e}")
@@ -1212,10 +1219,7 @@ def fetch_artist_catalog(artist):
                 out.append({"name": tn, "artist": r.get("artistName", "")})
             return out
 
-        tracks = _collect_tracks(results, artist_lower, require_original=True)
-        if not tracks:
-            tracks = _collect_tracks(results, artist_lower, require_original=False)
-        return tracks
+        return _collect_tracks(results, artist_lower, require_original=True)
     except Exception as e:
         log.debug(f"fetch_artist_catalog failed for '{artist}': {e}")
         return []
