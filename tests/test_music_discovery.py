@@ -2551,3 +2551,199 @@ def test_play_store_track_raises_on_jxa_failure(monkeypatch):
     monkeypatch.setattr(md, "_run_jxa", lambda s: ("", 1))
     with pytest.raises(RuntimeError, match="JXA MediaPlayer failed"):
         md._play_store_track("12345")
+
+
+class TestIsOriginalRecording:
+    """Unit tests for _is_original_recording() iTunes result filter."""
+
+    def _make_result(self, track_name="Eye in the Sky", collection_name="Eye In the Sky",
+                     artist_name="The Alan Parsons Project", track_count=10,
+                     collection_artist_name=None):
+        """Build a minimal iTunes API result dict."""
+        d = {
+            "trackName": track_name,
+            "collectionName": collection_name,
+            "artistName": artist_name,
+            "trackCount": track_count,
+        }
+        if collection_artist_name is not None:
+            d["collectionArtistName"] = collection_artist_name
+        return d
+
+    def test_original_studio_album(self):
+        assert md._is_original_recording(self._make_result()) is True
+
+    def test_va_compilation(self):
+        r = self._make_result(collection_artist_name="Various Artists",
+                              collection_name="80s 100 Hits", track_count=100)
+        assert md._is_original_recording(r) is False
+
+    def test_va_different_collection_artist(self):
+        """collectionArtistName differs from artistName — VA/DJ compilation."""
+        r = self._make_result(collection_artist_name="Y.O.G.A.",
+                              collection_name="COW TECH MIX", track_count=15)
+        assert md._is_original_recording(r) is False
+
+    def test_dj_mix_collection_name(self):
+        """DJ Mix keyword in collectionName catches DJ compilations."""
+        r = self._make_result(collection_name="Ministry of Sound DJ Mix")
+        assert md._is_original_recording(r) is False
+
+    def test_greatest_hits_album(self):
+        r = self._make_result(collection_name="Greatest Hits", track_count=16)
+        assert md._is_original_recording(r) is False
+
+    def test_best_of_album(self):
+        r = self._make_result(collection_name="The Best of Journey", track_count=18)
+        assert md._is_original_recording(r) is False
+
+    def test_anthology_album(self):
+        r = self._make_result(collection_name="Anthology", track_count=20)
+        assert md._is_original_recording(r) is False
+
+    def test_live_at_album(self):
+        r = self._make_result(collection_name="Live at Madison Square Garden")
+        assert md._is_original_recording(r) is False
+
+    def test_live_from_album(self):
+        r = self._make_result(collection_name="Live from Nowhere Near You")
+        assert md._is_original_recording(r) is False
+
+    def test_live_in_album(self):
+        r = self._make_result(collection_name="Live in Houston 1981")
+        assert md._is_original_recording(r) is False
+
+    def test_unplugged_album(self):
+        r = self._make_result(collection_name="MTV Unplugged in New York")
+        assert md._is_original_recording(r) is False
+
+    def test_now_thats_album(self):
+        r = self._make_result(collection_name="Now That's What I Call Music 93",
+                              track_count=40)
+        assert md._is_original_recording(r) is False
+
+    def test_n_hits_album(self):
+        r = self._make_result(collection_name="100 Hits - Rock", track_count=100)
+        assert md._is_original_recording(r) is False
+
+    def test_live_track_name(self):
+        r = self._make_result(track_name="Don't Stop Believin' (Live)")
+        assert md._is_original_recording(r) is False
+
+    def test_remix_track_name(self):
+        r = self._make_result(track_name="Dreams (Gigamesh Edit) [Mixed]")
+        assert md._is_original_recording(r) is False
+
+    def test_acoustic_track_name(self):
+        r = self._make_result(track_name="Creep (Acoustic)")
+        assert md._is_original_recording(r) is False
+
+    def test_demo_track_name(self):
+        r = self._make_result(track_name="Creep [Demo]")
+        assert md._is_original_recording(r) is False
+
+    def test_radio_edit_track_name(self):
+        r = self._make_result(track_name="Bohemian Rhapsody (Radio Edit)")
+        assert md._is_original_recording(r) is False
+
+    def test_re_recorded_track_name(self):
+        r = self._make_result(track_name="Don't Stop Believin' (Re-Recorded)")
+        assert md._is_original_recording(r) is False
+
+    def test_instrumental_track_name(self):
+        r = self._make_result(track_name="Creep (Instrumental)")
+        assert md._is_original_recording(r) is False
+
+    def test_karaoke_track_name(self):
+        r = self._make_result(track_name="Creep (Karaoke)")
+        assert md._is_original_recording(r) is False
+
+    def test_single_edit_track_name(self):
+        r = self._make_result(track_name="Stairway to Heaven (Single Edit)")
+        assert md._is_original_recording(r) is False
+
+    def test_club_mix_track_name(self):
+        r = self._make_result(track_name="Blue Monday (Club Mix)")
+        assert md._is_original_recording(r) is False
+
+    def test_sessions_track_name(self):
+        r = self._make_result(track_name="Dreams (Sessions, Roughs & Outtakes)")
+        assert md._is_original_recording(r) is False
+
+    def test_take_n_track_name(self):
+        r = self._make_result(track_name="Dreams (Take 2)")
+        assert md._is_original_recording(r) is False
+
+    def test_take_nn_track_name(self):
+        """Multi-digit take numbers must also be caught."""
+        r = self._make_result(track_name="Dreams (Take 12)")
+        assert md._is_original_recording(r) is False
+
+    def test_bonus_track_name(self):
+        r = self._make_result(track_name="Hidden Track (Bonus)")
+        assert md._is_original_recording(r) is False
+
+    def test_extended_track_name(self):
+        r = self._make_result(track_name="Blue Monday (Extended)")
+        assert md._is_original_recording(r) is False
+
+    # --- ALLOWED cases (should return True) ---
+
+    def test_remastered_is_allowed(self):
+        """Remastered is a fidelity change, not a different performance."""
+        r = self._make_result(track_name="Don't Stop Believin' (Remastered 2022)",
+                              collection_name="Escape (2022 Remaster)")
+        assert md._is_original_recording(r) is True
+
+    def test_double_album_allowed(self):
+        r = self._make_result(track_name="Comfortably Numb",
+                              collection_name="The Wall", track_count=26)
+        assert md._is_original_recording(r) is True
+
+    def test_missing_collection_artist_key(self):
+        """No collectionArtistName key at all — should not raise."""
+        r = {"trackName": "Dreams", "collectionName": "Rumours",
+             "artistName": "Fleetwood Mac", "trackCount": 11}
+        assert md._is_original_recording(r) is True
+
+    def test_high_track_count_compilation(self):
+        r = self._make_result(track_count=40)
+        assert md._is_original_recording(r) is False
+
+    def test_track_count_35_allowed(self):
+        """Boundary: 35 is allowed, 36 is not."""
+        r = self._make_result(track_count=35)
+        assert md._is_original_recording(r) is True
+
+    def test_track_count_36_rejected(self):
+        r = self._make_result(track_count=36)
+        assert md._is_original_recording(r) is False
+
+    def test_live_and_let_die_not_rejected(self):
+        """'Live' in the track title (not in parens) must not trigger the filter."""
+        r = self._make_result(track_name="Live and Let Die",
+                              collection_name="Band on the Run")
+        assert md._is_original_recording(r) is True
+
+    def test_collection_artist_matches_artist(self):
+        """collectionArtistName present but same as artistName — not a VA compilation."""
+        r = self._make_result(collection_artist_name="The Alan Parsons Project")
+        assert md._is_original_recording(r) is True
+
+    def test_essential_tremors_not_rejected(self):
+        """'Essential' was excluded from keywords to avoid this false positive."""
+        r = self._make_result(collection_name="Essential Tremors",
+                              artist_name="Drive-By Truckers")
+        assert md._is_original_recording(r) is True
+
+    def test_collection_name_none_does_not_crash(self):
+        """collectionName=null from API must not raise TypeError."""
+        r = {"trackName": "Eye in the Sky", "collectionName": None,
+             "artistName": "The Alan Parsons Project", "trackCount": 10}
+        assert md._is_original_recording(r) is True
+
+    def test_track_name_none_does_not_crash(self):
+        """trackName=null from API must not raise TypeError."""
+        r = {"trackName": None, "collectionName": "Eye In the Sky",
+             "artistName": "The Alan Parsons Project", "trackCount": 10}
+        assert md._is_original_recording(r) is True
