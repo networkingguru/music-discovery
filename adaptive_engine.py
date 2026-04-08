@@ -61,6 +61,9 @@ def _load_offered_tracks(path: pathlib.Path) -> tuple[set, list]:
         for t in entries:
             track_set.add((t["artist"], t["track"]))
             track_set.add((t["artist"], _normalize_for_match(t["track"])))
+        # Issue #13 diagnostic: verify cross-round state loaded correctly
+        log.debug("  _load_offered_tracks: %d entries -> %d set keys from %s",
+                  len(entries), len(track_set), path)
         return track_set, entries
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         log.warning("Corrupt offered_tracks.json, starting fresh: %s", e)
@@ -1143,6 +1146,10 @@ end tell
         unique_catalog = [t for t in catalog_tracks if _normalize_for_match(t["name"]) not in lastfm_names]
 
         all_tracks = lastfm_tracks + unique_catalog
+        # Issue #13 diagnostic: log full track list to detect Last.fm dupes or variants
+        log.debug("  [%s] all_tracks (%d): %s",
+                  artist, len(all_tracks),
+                  [t.get("name", "?") for t in all_tracks])
         artist_search_results = []
         added_count = 0
         search_attempts = 0
@@ -1164,6 +1171,17 @@ end tell
             norm_key = (artist.lower(), _normalize_for_match(track_name))
             if key in offered_set or norm_key in offered_set:
                 continue
+            # Issue #13 diagnostic: log WHY this track passed the dedup check
+            # Guard with isEnabledFor to avoid O(n) comprehension over offered_set
+            # when DEBUG is disabled
+            if log.isEnabledFor(logging.DEBUG):
+                artist_entries_in_set = [
+                    entry for entry in offered_set if entry[0] == artist.lower()
+                ]
+                log.debug("    DEDUP PASS: key=%s in_set=%s | norm=%s in_set=%s | "
+                          "artist_entries=%d: %s",
+                          key, key in offered_set, norm_key, norm_key in offered_set,
+                          len(artist_entries_in_set), artist_entries_in_set[:10])
 
             # Search iTunes
             result = search_itunes(artist, track_name)
@@ -1186,6 +1204,16 @@ end tell
                           result.canonical_artist, result.canonical_track,
                           track_name)
                 continue
+            # Issue #13 diagnostic: log post-resolution pass
+            if log.isEnabledFor(logging.DEBUG):
+                canon_artist_entries = [
+                    entry for entry in offered_set if entry[0] == canon_artist
+                ]
+                log.debug("    POST-RES PASS: canon_key=%s in_set=%s | canon_norm=%s "
+                          "in_set=%s | canon_artist_entries=%d: %s",
+                          canon_key, canon_key in offered_set,
+                          canon_norm, canon_norm in offered_set,
+                          len(canon_artist_entries), canon_artist_entries[:10])
 
             # Try to add to playlist
             add_result = _add_track_to_named_playlist(
@@ -1210,6 +1238,11 @@ end tell
                     "round": current_round,
                 })
                 added_count += 1
+                # Issue #13 diagnostic: log all 6 keys added + actual resolution
+                log.debug("    ADDED: actual=(%s, %s) | keys added: %s",
+                          actual_artist, actual_track,
+                          [key, norm_key, actual_key, actual_norm,
+                           canon_key, canon_norm])
 
             time.sleep(0.3)  # Rate limiting
 
