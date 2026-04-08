@@ -865,6 +865,29 @@ def _run_build(cache_dir: pathlib.Path, args):
     overrides = load_overrides(cache_dir / "artist_overrides.json")
     history_rounds = load_feedback_history(cache_dir / "feedback_history.json")
     current_round = len(history_rounds) + 1
+
+    # Guard: refuse to build if the previous build's feedback hasn't been collected.
+    # Without feedback, cooldown is inoperative and artists get re-offered immediately.
+    # After --reset, offered_tracks entries are renumbered to round 0, so max_round
+    # only exceeds feedback count if a build ran without subsequent feedback.
+    offered_guard_path = cache_dir / "offered_tracks.json"
+    if offered_guard_path.exists():
+        try:
+            od = json.loads(offered_guard_path.read_text(encoding="utf-8"))
+            ol = od.get("tracks", [])
+            if ol:
+                max_offered_round = max(t.get("round", 0) for t in ol)
+                if max_offered_round > 0 and max_offered_round > len(history_rounds):
+                    log.error(
+                        "BLOCKED: offered_tracks has entries from round %d but only "
+                        "%d feedback round(s) recorded. Run --feedback before "
+                        "building a new round.",
+                        max_offered_round, len(history_rounds),
+                    )
+                    sys.exit(1)
+        except (json.JSONDecodeError, TypeError, AttributeError) as e:
+            log.warning("Could not parse offered_tracks.json for guard check: %s", e)
+
     log.info("  Round %d. %d history rounds, %d blocklisted.",
              current_round, len(history_rounds), len(full_blocklist))
 
@@ -1579,8 +1602,24 @@ def _run_reset(cache_dir: pathlib.Path):
         else:
             log.debug("  Skipped (not found): %s", filename)
 
+    # Renumber offered_tracks entries to round 0 so they form a historical base
+    # for the new epoch. New builds start at round 1; cooldown logic naturally
+    # ages out round-0 entries after cooldown_rounds.
+    offered_path = cache_dir / "offered_tracks.json"
+    if offered_path.exists():
+        try:
+            od = json.loads(offered_path.read_text(encoding="utf-8"))
+            entries = od.get("tracks", [])
+            if entries:
+                for entry in entries:
+                    entry["round"] = 0
+                _save_offered_tracks(offered_path, entries)
+                log.info("  Renumbered %d offered_tracks entries to round 0.", len(entries))
+        except (json.JSONDecodeError, TypeError, AttributeError) as e:
+            log.warning("  Could not renumber offered_tracks: %s", e)
+
     log.info("Reset complete: %d files deleted.", deleted)
-    log.info("Preserved: caches (music_map, filter, signal), offered_tracks, ai_detection_log.")
+    log.info("Preserved: caches (music_map, filter, signal), offered_tracks (renumbered to r0), ai_detection_log.")
     log.info("\nRun --seed to rebuild the adaptive model from your current library.")
 
 
