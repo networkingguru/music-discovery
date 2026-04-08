@@ -1215,6 +1215,21 @@ end tell
                           canon_norm, canon_norm in offered_set,
                           len(canon_artist_entries), canon_artist_entries[:10])
 
+            # Pre-add failsafe: check offered_tracks (per-round) for canonical match
+            # This catches duplicates that somehow passed offered_set checks (#13)
+            if canon_key in offered_tracks or canon_norm in offered_tracks:
+                if log.isEnabledFor(logging.DEBUG):
+                    matching = [e for e in offered_tracks
+                                if e[0] in (canon_artist, artist.lower())]
+                else:
+                    matching = []
+                log.warning("  FAILSAFE PRE-ADD: duplicate caught for %s — %s "
+                            "(canon_key=%s, canon_norm=%s). "
+                            "Matching entries in offered_tracks: %s",
+                            canon_artist, canon_track, canon_key, canon_norm,
+                            matching[:10])
+                continue
+
             # Try to add to playlist
             add_result = _add_track_to_named_playlist(
                 artist, track_name, playlist_name, search_result=result)
@@ -1225,24 +1240,42 @@ end tell
                 actual_key = (actual_artist.lower(), actual_track.lower())
                 actual_norm = (actual_artist.lower(),
                                _normalize_for_match(actual_track))
-                offered_tracks.add(actual_key)
-                offered_set.add(key)
-                offered_set.add(norm_key)
-                offered_set.add(actual_key)
-                offered_set.add(actual_norm)
-                offered_set.add(canon_key)
-                offered_set.add(canon_norm)
-                offered_entries.append({
-                    "artist": actual_artist.lower(),
-                    "track": actual_track.lower(),
-                    "round": current_round,
-                })
-                added_count += 1
-                # Issue #13 diagnostic: log all 6 keys added + actual resolution
-                log.debug("    ADDED: actual=(%s, %s) | keys added: %s",
-                          actual_artist, actual_track,
-                          [key, norm_key, actual_key, actual_norm,
-                           canon_key, canon_norm])
+
+                # Post-add failsafe: if actual resolution matches something
+                # already added this round, skip the bookkeeping (playlist add
+                # already happened — this only protects offered_entries integrity).
+                # Still increment added_count since the track IS in the playlist.
+                if actual_key in offered_tracks or actual_norm in offered_tracks:
+                    log.warning("  FAILSAFE POST-ADD: duplicate actual resolution "
+                                "for %s — %s (already in offered_tracks). "
+                                "Playlist add happened but skipping bookkeeping.",
+                                actual_artist, actual_track)
+                    added_count += 1
+                else:
+                    # Expand offered_tracks with all 6 key variants (#13)
+                    offered_tracks.add(key)
+                    offered_tracks.add(norm_key)
+                    offered_tracks.add(actual_key)
+                    offered_tracks.add(actual_norm)
+                    offered_tracks.add(canon_key)
+                    offered_tracks.add(canon_norm)
+                    offered_set.add(key)
+                    offered_set.add(norm_key)
+                    offered_set.add(actual_key)
+                    offered_set.add(actual_norm)
+                    offered_set.add(canon_key)
+                    offered_set.add(canon_norm)
+                    offered_entries.append({
+                        "artist": actual_artist.lower(),
+                        "track": actual_track.lower(),
+                        "round": current_round,
+                    })
+                    # Issue #13 diagnostic: log all 6 keys added + actual resolution
+                    log.debug("    ADDED: actual=(%s, %s) | keys added: %s",
+                              actual_artist, actual_track,
+                              [key, norm_key, actual_key, actual_norm,
+                               canon_key, canon_norm])
+                    added_count += 1
 
             time.sleep(0.3)  # Rate limiting
 

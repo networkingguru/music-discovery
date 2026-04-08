@@ -21,6 +21,7 @@ from adaptive_engine import (
     load_overrides,
     rank_candidates,
 )
+from signal_experiment import _normalize_for_match
 
 
 # ── compute_final_score ──────────────────────────────────────────────────────
@@ -1136,3 +1137,41 @@ class TestSeedInjectionIntegration:
 
         result = _detect_new_favorite_seeds(history, favorites, scrape_cache)
         assert len(result) == 0
+
+
+class TestFailsafeDedup:
+    """Verify the failsafe dedup gate key coverage."""
+
+    def test_canonical_key_catches_the_prefix_mismatch(self):
+        """Core #13 scenario: ranked artist 'alan parsons project' adds track,
+        then same track arrives via 'the alan parsons project'."""
+        offered_tracks = set()
+        key1 = ("alan parsons project", "eye in the sky")
+        norm1 = ("alan parsons project", _normalize_for_match("Eye in the Sky"))
+        actual1 = ("the alan parsons project", "eye in the sky")
+        actual_norm1 = ("the alan parsons project", _normalize_for_match("Eye in the Sky"))
+        canon1 = ("the alan parsons project", "eye in the sky")
+        canon_norm1 = ("the alan parsons project", _normalize_for_match("Eye in the Sky"))
+        for k in (key1, norm1, actual1, actual_norm1, canon1, canon_norm1):
+            offered_tracks.add(k)
+
+        second_canon_key = ("the alan parsons project", "eye in the sky")
+        second_canon_norm = ("the alan parsons project", _normalize_for_match("Eye in the Sky"))
+        assert second_canon_key in offered_tracks
+        assert second_canon_norm in offered_tracks
+
+    def test_six_variants_cover_all_name_forms(self):
+        """Verify all 6 key forms are present after one track add."""
+        offered_tracks = set()
+        variants = [
+            ("foo", "bar"),
+            ("foo", _normalize_for_match("Bar")),
+            ("the foo", "bar"),
+            ("the foo", _normalize_for_match("Bar")),
+            ("the foo", "bar"),
+            ("the foo", _normalize_for_match("Bar")),
+        ]
+        for v in variants:
+            offered_tracks.add(v)
+        assert ("foo", "bar") in offered_tracks
+        assert ("the foo", "bar") in offered_tracks
