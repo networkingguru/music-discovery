@@ -1140,8 +1140,9 @@ def search_itunes(artist, track_name):
         artist_lower = artist.strip().lower()
 
         # Partition into original and fallback (compilation/live/remix)
-        originals = [r for r in results if _is_original_recording(r)]
-        fallbacks = [r for r in results if not _is_original_recording(r)]
+        originals, fallbacks = [], []
+        for r in results:
+            (originals if _is_original_recording(r) else fallbacks).append(r)
 
         # Search order: original exact, original fuzzy, fallback exact, fallback fuzzy
         for pool in (originals, fallbacks):
