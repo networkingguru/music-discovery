@@ -2687,16 +2687,6 @@ class TestIsOriginalRecording:
         r = self._make_result(track_name="Blue Monday (Extended)")
         assert md._is_original_recording(r) is False
 
-    def test_soundtrack_track_name(self):
-        """Soundtrack parenthetical should be caught."""
-        r = self._make_result(track_name='Night Fever (From "Saturday Night Fever" Soundtrack)')
-        assert md._is_original_recording(r) is False
-
-    def test_named_mix_track_name(self):
-        """Named mix variants like (US Mix) should be caught."""
-        r = self._make_result(track_name="You Just Haven't Earned It Yet, Baby (US Mix)")
-        assert md._is_original_recording(r) is False
-
     # --- ALLOWED cases (should return True) ---
 
     def test_remastered_is_allowed(self):

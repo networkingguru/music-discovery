@@ -1129,7 +1129,6 @@ end tell
     # Load cross-round state
     offered_path = cache_dir / "offered_tracks.json"
     offered_set, offered_entries = _load_offered_tracks(offered_path)
-    prev_entries_count = len(offered_entries)
 
     # Pre-seed offered_set with all library tracks so we only offer deep cuts
     # (These are NOT written to offered_tracks.json — only used for filtering)
@@ -1317,8 +1316,7 @@ end tell
     _save_search_strikes(strikes_path, strikes)
 
     log.info("  Playlist '%s': %d tracks for %d artists (of %d ranked).",
-             playlist_name, slots_filled, len(offered_entries) - prev_entries_count,
-             len(ranked))
+             playlist_name, len(offered_tracks), slots_filled, len(ranked))
 
     # ── Post-build playlist count verification ──────────────────────────────
     verify_script = f'''
