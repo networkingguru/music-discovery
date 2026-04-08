@@ -2749,16 +2749,17 @@ class TestIsOriginalRecording:
         assert md._is_original_recording(r) is True
 
 
+def _fake_itunes_response(results):
+    """Build a mock iTunes API response object."""
+    import types
+    resp = types.SimpleNamespace()
+    resp.status_code = 200
+    resp.json = lambda: {"results": results}
+    return resp
+
+
 class TestSearchItunesOriginalPreference:
     """Verify search_itunes prefers original recordings over compilations."""
-
-    def _fake_response(self, results):
-        """Build a mock requests.Response-like object."""
-        import types
-        resp = types.SimpleNamespace()
-        resp.status_code = 200
-        resp.json = lambda: {"results": results}
-        return resp
 
     def _song(self, track_id, artist, track, collection="Album",
               duration_ms=240000, collection_artist=None, track_count=10):
@@ -2781,7 +2782,7 @@ class TestSearchItunesOriginalPreference:
         original = self._song(2, "Journey", "Don't Stop Believin'",
                               collection="Escape")
         monkeypatch.setattr("music_discovery.requests.get",
-                            lambda *a, **kw: self._fake_response([compilation, original]))
+                            lambda *a, **kw: _fake_itunes_response([compilation, original]))
         result = md.search_itunes("Journey", "Don't Stop Believin'")
         assert result.store_id == "2"
 
@@ -2789,7 +2790,7 @@ class TestSearchItunesOriginalPreference:
         compilation = self._song(1, "Journey", "Don't Stop Believin'",
                                  collection="Greatest Hits", track_count=16)
         monkeypatch.setattr("music_discovery.requests.get",
-                            lambda *a, **kw: self._fake_response([compilation]))
+                            lambda *a, **kw: _fake_itunes_response([compilation]))
         result = md.search_itunes("Journey", "Don't Stop Believin'")
         assert result.store_id == "1"
 
@@ -2799,7 +2800,7 @@ class TestSearchItunesOriginalPreference:
         exact = self._song(2, "Alan Parsons Project", "Eye in the Sky",
                            collection="Eye In the Sky")
         monkeypatch.setattr("music_discovery.requests.get",
-                            lambda *a, **kw: self._fake_response([fuzzy, exact]))
+                            lambda *a, **kw: _fake_itunes_response([fuzzy, exact]))
         result = md.search_itunes("Alan Parsons Project", "Eye in the Sky")
         assert result.store_id == "2"
 
@@ -2810,20 +2811,13 @@ class TestSearchItunesOriginalPreference:
         orig_fuzzy = self._song(2, "Journey & Friends", "Don't Stop Believin'",
                                 collection="Escape")
         monkeypatch.setattr("music_discovery.requests.get",
-                            lambda *a, **kw: self._fake_response([comp_exact, orig_fuzzy]))
+                            lambda *a, **kw: _fake_itunes_response([comp_exact, orig_fuzzy]))
         result = md.search_itunes("Journey", "Don't Stop Believin'")
         assert result.store_id == "2"
 
 
 class TestFetchArtistCatalogOriginalPreference:
     """Verify fetch_artist_catalog filters non-originals with soft fallback."""
-
-    def _fake_response(self, results):
-        import types
-        resp = types.SimpleNamespace()
-        resp.status_code = 200
-        resp.json = lambda: {"results": results}
-        return resp
 
     def _song(self, artist, track, collection="Album",
               duration_ms=240000, collection_artist=None, track_count=10):
@@ -2844,7 +2838,7 @@ class TestFetchArtistCatalogOriginalPreference:
             self._song("Journey", "Open Arms", collection="Frontiers"),
         ]
         monkeypatch.setattr("music_discovery.requests.get",
-                            lambda *a, **kw: self._fake_response(songs))
+                            lambda *a, **kw: _fake_itunes_response(songs))
         tracks = md.fetch_artist_catalog("Journey")
         names = [t["name"] for t in tracks]
         assert "Don't Stop Believin'" in names
@@ -2858,7 +2852,7 @@ class TestFetchArtistCatalogOriginalPreference:
             self._song("Journey", "Faithfully", collection="Greatest Hits"),
         ]
         monkeypatch.setattr("music_discovery.requests.get",
-                            lambda *a, **kw: self._fake_response(songs))
+                            lambda *a, **kw: _fake_itunes_response(songs))
         tracks = md.fetch_artist_catalog("Journey")
         assert len(tracks) == 2
 
@@ -2869,7 +2863,7 @@ class TestFetchArtistCatalogOriginalPreference:
             self._song("Journey", "Don't Stop Believin'", collection="Escape"),
         ]
         monkeypatch.setattr("music_discovery.requests.get",
-                            lambda *a, **kw: self._fake_response(songs))
+                            lambda *a, **kw: _fake_itunes_response(songs))
         tracks = md.fetch_artist_catalog("Journey")
         names = [t["name"] for t in tracks]
         assert "Don't Stop Believin'" in names

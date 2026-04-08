@@ -1187,49 +1187,34 @@ def fetch_artist_catalog(artist):
         results = resp.json().get("results", [])
         artist_lower = artist.strip().lower()
 
-        # First pass: collect originals only (filter before dedup)
-        seen = set()
-        tracks = []
-        for r in results:
-            if r.get("kind") != "song":
-                continue
-            result_artist = r.get("artistName", "").strip().lower()
-            if result_artist != artist_lower and not (
-                artist_lower in result_artist or result_artist in artist_lower
-            ):
-                continue
-            duration_ms = r.get("trackTimeMillis", 0)
-            if duration_ms < 90_000 or duration_ms > 600_000:
-                continue
-            if not _is_original_recording(r):
-                continue
-            track_name = r.get("trackName", "")
-            key = track_name.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            tracks.append({"name": track_name, "artist": r.get("artistName", "")})
-
-        # Soft fallback: if filtering removed everything, return unfiltered
-        if not tracks:
+        def _collect_tracks(source, artist_low, require_original=False):
+            """Filter and dedup tracks from iTunes results."""
             seen = set()
-            for r in results:
+            out = []
+            for r in source:
                 if r.get("kind") != "song":
                     continue
-                result_artist = r.get("artistName", "").strip().lower()
-                if result_artist != artist_lower and not (
-                    artist_lower in result_artist or result_artist in artist_lower
+                ra = r.get("artistName", "").strip().lower()
+                if ra != artist_low and not (
+                    artist_low in ra or ra in artist_low
                 ):
                     continue
-                duration_ms = r.get("trackTimeMillis", 0)
-                if duration_ms < 90_000 or duration_ms > 600_000:
+                dur = r.get("trackTimeMillis", 0)
+                if dur < 90_000 or dur > 600_000:
                     continue
-                track_name = r.get("trackName", "")
-                key = track_name.lower()
-                if key in seen:
+                if require_original and not _is_original_recording(r):
                     continue
-                seen.add(key)
-                tracks.append({"name": track_name, "artist": r.get("artistName", "")})
+                tn = r.get("trackName", "")
+                k = tn.lower()
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append({"name": tn, "artist": r.get("artistName", "")})
+            return out
+
+        tracks = _collect_tracks(results, artist_lower, require_original=True)
+        if not tracks:
+            tracks = _collect_tracks(results, artist_lower, require_original=False)
         return tracks
     except Exception as e:
         log.debug(f"fetch_artist_catalog failed for '{artist}': {e}")
