@@ -2813,3 +2813,64 @@ class TestSearchItunesOriginalPreference:
                             lambda *a, **kw: self._fake_response([comp_exact, orig_fuzzy]))
         result = md.search_itunes("Journey", "Don't Stop Believin'")
         assert result.store_id == "2"
+
+
+class TestFetchArtistCatalogOriginalPreference:
+    """Verify fetch_artist_catalog filters non-originals with soft fallback."""
+
+    def _fake_response(self, results):
+        import types
+        resp = types.SimpleNamespace()
+        resp.status_code = 200
+        resp.json = lambda: {"results": results}
+        return resp
+
+    def _song(self, artist, track, collection="Album",
+              duration_ms=240000, collection_artist=None, track_count=10):
+        return {
+            "kind": "song",
+            "artistName": artist,
+            "trackName": track,
+            "collectionName": collection,
+            "trackTimeMillis": duration_ms,
+            "trackCount": track_count,
+            **({"collectionArtistName": collection_artist} if collection_artist else {}),
+        }
+
+    def test_filters_compilation_tracks(self, monkeypatch):
+        songs = [
+            self._song("Journey", "Don't Stop Believin'", collection="Escape"),
+            self._song("Journey", "Faithfully", collection="Greatest Hits"),
+            self._song("Journey", "Open Arms", collection="Frontiers"),
+        ]
+        monkeypatch.setattr("music_discovery.requests.get",
+                            lambda *a, **kw: self._fake_response(songs))
+        tracks = md.fetch_artist_catalog("Journey")
+        names = [t["name"] for t in tracks]
+        assert "Don't Stop Believin'" in names
+        assert "Open Arms" in names
+        assert "Faithfully" not in names
+
+    def test_soft_fallback_when_all_filtered(self, monkeypatch):
+        """If all tracks are non-original, return them anyway (soft fallback)."""
+        songs = [
+            self._song("Journey", "Don't Stop Believin'", collection="Greatest Hits"),
+            self._song("Journey", "Faithfully", collection="Greatest Hits"),
+        ]
+        monkeypatch.setattr("music_discovery.requests.get",
+                            lambda *a, **kw: self._fake_response(songs))
+        tracks = md.fetch_artist_catalog("Journey")
+        assert len(tracks) == 2
+
+    def test_filter_before_dedup_preserves_originals(self, monkeypatch):
+        """Compilation version arrives first, original second. Original must survive."""
+        songs = [
+            self._song("Journey", "Don't Stop Believin'", collection="Greatest Hits"),
+            self._song("Journey", "Don't Stop Believin'", collection="Escape"),
+        ]
+        monkeypatch.setattr("music_discovery.requests.get",
+                            lambda *a, **kw: self._fake_response(songs))
+        tracks = md.fetch_artist_catalog("Journey")
+        names = [t["name"] for t in tracks]
+        assert "Don't Stop Believin'" in names
+        assert len(tracks) == 1

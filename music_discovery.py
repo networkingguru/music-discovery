@@ -1172,7 +1172,8 @@ def search_itunes(artist, track_name):
 def fetch_artist_catalog(artist):
     """Fetch all available songs for an artist from the iTunes Search API.
     Returns list of {"name": str, "artist": str}. Deduplicates by track name.
-    Free API — no key required."""
+    Prefers original studio recordings; falls back to unfiltered if all are
+    filtered out.  Free API — no key required."""
     try:
         resp = requests.get(ITUNES_SEARCH_URL, timeout=15, params={
             "term":  artist,
@@ -1184,6 +1185,8 @@ def fetch_artist_catalog(artist):
             return []
         results = resp.json().get("results", [])
         artist_lower = artist.strip().lower()
+
+        # First pass: collect originals only (filter before dedup)
         seen = set()
         tracks = []
         for r in results:
@@ -1197,12 +1200,35 @@ def fetch_artist_catalog(artist):
             duration_ms = r.get("trackTimeMillis", 0)
             if duration_ms < 90_000 or duration_ms > 600_000:
                 continue
+            if not _is_original_recording(r):
+                continue
             track_name = r.get("trackName", "")
             key = track_name.lower()
             if key in seen:
                 continue
             seen.add(key)
             tracks.append({"name": track_name, "artist": r.get("artistName", "")})
+
+        # Soft fallback: if filtering removed everything, return unfiltered
+        if not tracks:
+            seen = set()
+            for r in results:
+                if r.get("kind") != "song":
+                    continue
+                result_artist = r.get("artistName", "").strip().lower()
+                if result_artist != artist_lower and not (
+                    artist_lower in result_artist or result_artist in artist_lower
+                ):
+                    continue
+                duration_ms = r.get("trackTimeMillis", 0)
+                if duration_ms < 90_000 or duration_ms > 600_000:
+                    continue
+                track_name = r.get("trackName", "")
+                key = track_name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                tracks.append({"name": track_name, "artist": r.get("artistName", "")})
         return tracks
     except Exception as e:
         log.debug(f"fetch_artist_catalog failed for '{artist}': {e}")
