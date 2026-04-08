@@ -1125,6 +1125,7 @@ def search_itunes(artist, track_name):
     """Search the iTunes/Apple Music catalog for a track.
     Returns a SearchResult. Use bool() to check if a track was found.
     Verifies the artist name matches to avoid returning wrong tracks.
+    Prefers original studio recordings over compilations/live/remixes.
     Free API — no key required."""
     try:
         resp = requests.get(ITUNES_SEARCH_URL, timeout=10, params={
@@ -1135,26 +1136,33 @@ def search_itunes(artist, track_name):
         if resp.status_code != 200:
             return SearchResult(None, searched_ok=False)
         results = resp.json().get("results", [])
-        # Filter out music videos — only accept actual songs
         results = [r for r in results if r.get("kind") == "song"]
         artist_lower = artist.strip().lower()
-        for r in results:
-            duration_ms = r.get("trackTimeMillis", 0)
-            if duration_ms < 90_000 or duration_ms > 600_000:
-                continue
-            result_artist = r.get("artistName", "").strip().lower()
-            if result_artist == artist_lower:
-                return SearchResult(str(r["trackId"]), True,
-                                    r.get("artistName", ""), r.get("trackName", ""))
-        # Fallback: fuzzy match (one name contains the other)
-        for r in results:
-            duration_ms = r.get("trackTimeMillis", 0)
-            if duration_ms < 90_000 or duration_ms > 600_000:
-                continue
-            result_artist = r.get("artistName", "").strip().lower()
-            if artist_lower in result_artist or result_artist in artist_lower:
-                return SearchResult(str(r["trackId"]), True,
-                                    r.get("artistName", ""), r.get("trackName", ""))
+
+        # Partition into original and fallback (compilation/live/remix)
+        originals = [r for r in results if _is_original_recording(r)]
+        fallbacks = [r for r in results if not _is_original_recording(r)]
+
+        # Search order: original exact, original fuzzy, fallback exact, fallback fuzzy
+        for pool in (originals, fallbacks):
+            # Exact artist match
+            for r in pool:
+                duration_ms = r.get("trackTimeMillis", 0)
+                if duration_ms < 90_000 or duration_ms > 600_000:
+                    continue
+                result_artist = r.get("artistName", "").strip().lower()
+                if result_artist == artist_lower:
+                    return SearchResult(str(r["trackId"]), True,
+                                        r.get("artistName", ""), r.get("trackName", ""))
+            # Fuzzy artist match
+            for r in pool:
+                duration_ms = r.get("trackTimeMillis", 0)
+                if duration_ms < 90_000 or duration_ms > 600_000:
+                    continue
+                result_artist = r.get("artistName", "").strip().lower()
+                if artist_lower in result_artist or result_artist in artist_lower:
+                    return SearchResult(str(r["trackId"]), True,
+                                        r.get("artistName", ""), r.get("trackName", ""))
         return SearchResult(None, searched_ok=True)
     except Exception as e:
         log.debug(f"search_itunes failed for '{artist} - {track_name}': {e}")

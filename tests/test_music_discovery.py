@@ -2747,3 +2747,69 @@ class TestIsOriginalRecording:
         r = {"trackName": None, "collectionName": "Eye In the Sky",
              "artistName": "The Alan Parsons Project", "trackCount": 10}
         assert md._is_original_recording(r) is True
+
+
+class TestSearchItunesOriginalPreference:
+    """Verify search_itunes prefers original recordings over compilations."""
+
+    def _fake_response(self, results):
+        """Build a mock requests.Response-like object."""
+        import types
+        resp = types.SimpleNamespace()
+        resp.status_code = 200
+        resp.json = lambda: {"results": results}
+        return resp
+
+    def _song(self, track_id, artist, track, collection="Album",
+              duration_ms=240000, collection_artist=None, track_count=10):
+        d = {
+            "kind": "song",
+            "trackId": track_id,
+            "artistName": artist,
+            "trackName": track,
+            "collectionName": collection,
+            "trackTimeMillis": duration_ms,
+            "trackCount": track_count,
+        }
+        if collection_artist is not None:
+            d["collectionArtistName"] = collection_artist
+        return d
+
+    def test_prefers_original_over_compilation(self, monkeypatch):
+        compilation = self._song(1, "Journey", "Don't Stop Believin'",
+                                 collection="Greatest Hits", track_count=16)
+        original = self._song(2, "Journey", "Don't Stop Believin'",
+                              collection="Escape")
+        monkeypatch.setattr("music_discovery.requests.get",
+                            lambda *a, **kw: self._fake_response([compilation, original]))
+        result = md.search_itunes("Journey", "Don't Stop Believin'")
+        assert result.store_id == "2"
+
+    def test_falls_back_to_compilation_when_no_original(self, monkeypatch):
+        compilation = self._song(1, "Journey", "Don't Stop Believin'",
+                                 collection="Greatest Hits", track_count=16)
+        monkeypatch.setattr("music_discovery.requests.get",
+                            lambda *a, **kw: self._fake_response([compilation]))
+        result = md.search_itunes("Journey", "Don't Stop Believin'")
+        assert result.store_id == "1"
+
+    def test_prefers_exact_artist_original_over_fuzzy_original(self, monkeypatch):
+        fuzzy = self._song(1, "The Alan Parsons Project", "Eye in the Sky",
+                           collection="Eye In the Sky")
+        exact = self._song(2, "Alan Parsons Project", "Eye in the Sky",
+                           collection="Eye In the Sky")
+        monkeypatch.setattr("music_discovery.requests.get",
+                            lambda *a, **kw: self._fake_response([fuzzy, exact]))
+        result = md.search_itunes("Alan Parsons Project", "Eye in the Sky")
+        assert result.store_id == "2"
+
+    def test_prefers_original_fuzzy_over_compilation_exact(self, monkeypatch):
+        """Original with fuzzy match beats compilation with exact match."""
+        comp_exact = self._song(1, "Journey", "Don't Stop Believin'",
+                                collection="Greatest Hits", track_count=16)
+        orig_fuzzy = self._song(2, "Journey & Friends", "Don't Stop Believin'",
+                                collection="Escape")
+        monkeypatch.setattr("music_discovery.requests.get",
+                            lambda *a, **kw: self._fake_response([comp_exact, orig_fuzzy]))
+        result = md.search_itunes("Journey", "Don't Stop Believin'")
+        assert result.store_id == "2"
