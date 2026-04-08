@@ -1072,6 +1072,56 @@ def _run_jxa(script):
         raise RuntimeError("osascript (JXA) timed out after 30 seconds")
 
 
+# Regex: track name contains a parenthetical/bracket variant suffix
+_VARIANT_TRACK_RE = re.compile(
+    r"[\(\[](Live|Remix|Re-Recorded|Acoustic|Demo|Radio Edit|"
+    r"Instrumental|Karaoke|Single Edit|Club Mix|"
+    r"Extended|Sessions|Outtakes|Take \d+|Mixed|Bonus)",
+    re.IGNORECASE,
+)
+
+# Regex: collection name matches compilation keywords (word-boundary anchored)
+_COMPILATION_ALBUM_RE = re.compile(
+    r"\b(Greatest\s+Hits|Best\s+of|Anthology|Classics|"
+    r"\d+\s+Hits|DJ\s+Mix|Lullaby|Renditions|"
+    r"Live\s+at|Live\s+from|Live\s+in|Live\s+Tour|"
+    r"Unplugged|MTV|Now\s+That'?s)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_original_recording(result: dict) -> bool:
+    """Return False if an iTunes result is likely a non-original recording.
+
+    Checks: VA compilation, track-name variant suffixes, compilation album
+    name keywords, and high track count. Handles missing keys gracefully.
+    Remastered/Stereo Mix/Mono are ALLOWED (fidelity changes, not different
+    performances)."""
+    # 1. VA compilation: collectionArtistName differs from artistName
+    collection_artist = result.get("collectionArtistName", "")
+    if collection_artist:
+        artist = result.get("artistName", "")
+        if collection_artist.lower().strip() != artist.lower().strip():
+            return False
+
+    # 2. Track name variant suffix
+    track_name = result.get("trackName") or ""
+    if _VARIANT_TRACK_RE.search(track_name):
+        return False
+
+    # 3. Compilation album name keywords
+    collection_name = result.get("collectionName") or ""
+    if _COMPILATION_ALBUM_RE.search(collection_name):
+        return False
+
+    # 4. High track count (>35 = almost certainly a compilation)
+    track_count = result.get("trackCount", 0) or 0
+    if track_count > 35:
+        return False
+
+    return True
+
+
 def search_itunes(artist, track_name):
     """Search the iTunes/Apple Music catalog for a track.
     Returns a SearchResult. Use bool() to check if a track was found.
