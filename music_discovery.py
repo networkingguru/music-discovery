@@ -111,6 +111,23 @@ _COVER_RE = re.compile(r"as made famous by", re.IGNORECASE)
 # Strip parentheticals, "- Live at …", and other suffixes for dedup comparison
 _DEDUP_STRIP_RE = re.compile(r"\s*[\(\[].*?[\)\]]|\s*-\s.*$")
 
+# Regex: track name contains a parenthetical/bracket variant suffix
+_VARIANT_TRACK_RE = re.compile(
+    r"[\(\[](Live|Remix|Re-Recorded|Acoustic|Demo|Radio Edit|"
+    r"Instrumental|Karaoke|Single Edit|Club Mix|"
+    r"Extended|Sessions|Outtakes|Take \d+|Mixed|Bonus)",
+    re.IGNORECASE,
+)
+
+# Regex: collection name matches compilation keywords (word-boundary anchored)
+_COMPILATION_ALBUM_RE = re.compile(
+    r"\b(Greatest\s+Hits|Best\s+of|Anthology|Classics|"
+    r"\d+\s+Hits|DJ\s+Mix|Lullaby|Renditions|"
+    r"Live\s+at|Live\s+from|Live\s+in|Live\s+Tour|"
+    r"Unplugged|MTV|Now\s+That'?s)\b",
+    re.IGNORECASE,
+)
+
 DEFAULT_CACHE_DIR = "~/.cache/music_discovery"
 
 LOG_PATH = pathlib.Path(__file__).parent / "run.log"
@@ -1070,24 +1087,6 @@ def _run_jxa(script):
         return result.stdout.strip(), result.returncode
     except subprocess.TimeoutExpired:
         raise RuntimeError("osascript (JXA) timed out after 30 seconds")
-
-
-# Regex: track name contains a parenthetical/bracket variant suffix
-_VARIANT_TRACK_RE = re.compile(
-    r"[\(\[](Live|Remix|Re-Recorded|Acoustic|Demo|Radio Edit|"
-    r"Instrumental|Karaoke|Single Edit|Club Mix|"
-    r"Extended|Sessions|Outtakes|Take \d+|Mixed|Bonus)",
-    re.IGNORECASE,
-)
-
-# Regex: collection name matches compilation keywords (word-boundary anchored)
-_COMPILATION_ALBUM_RE = re.compile(
-    r"\b(Greatest\s+Hits|Best\s+of|Anthology|Classics|"
-    r"\d+\s+Hits|DJ\s+Mix|Lullaby|Renditions|"
-    r"Live\s+at|Live\s+from|Live\s+in|Live\s+Tour|"
-    r"Unplugged|MTV|Now\s+That'?s)\b",
-    re.IGNORECASE,
-)
 
 
 def _is_original_recording(result: dict) -> bool:
