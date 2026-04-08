@@ -1252,19 +1252,11 @@ end tell
                                 actual_artist, actual_track)
                     added_count += 1
                 else:
-                    # Expand offered_tracks with all 6 key variants (#13)
-                    offered_tracks.add(key)
-                    offered_tracks.add(norm_key)
-                    offered_tracks.add(actual_key)
-                    offered_tracks.add(actual_norm)
-                    offered_tracks.add(canon_key)
-                    offered_tracks.add(canon_norm)
-                    offered_set.add(key)
-                    offered_set.add(norm_key)
-                    offered_set.add(actual_key)
-                    offered_set.add(actual_norm)
-                    offered_set.add(canon_key)
-                    offered_set.add(canon_norm)
+                    # Expand both sets with all 6 key variants (#13)
+                    all_keys = (key, norm_key, actual_key, actual_norm,
+                                canon_key, canon_norm)
+                    offered_tracks.update(all_keys)
+                    offered_set.update(all_keys)
                     offered_entries.append({
                         "artist": actual_artist.lower(),
                         "track": actual_track.lower(),
