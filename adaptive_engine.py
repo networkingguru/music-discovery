@@ -1068,39 +1068,20 @@ def _run_build(cache_dir: pathlib.Path, args):
         current_round=current_round,
     )
 
-    playlist_size = args.playlist_size
-
     # Stratified mix: 60% new artists (2 tracks each), 40% library deep cuts
-    # (1 track each), targeting 100 total tracks.
+    # (1 track each), targeting TOTAL_TRACKS. Pools are not truncated — the
+    # build loop draws from each until the target is met (soft fill).
     TOTAL_TRACKS = 100
     NEW_TRACKS_PER = 2
     LIB_TRACKS_PER = 1
-    new_target = round(TOTAL_TRACKS * 0.6) // NEW_TRACKS_PER   # 30 new artists
-    lib_target = (TOTAL_TRACKS - new_target * NEW_TRACKS_PER) // LIB_TRACKS_PER  # 40 lib artists
+    NEW_RATIO = 0.6
 
-    new_artists = [(s, a) for s, a in ranked if a not in library_artists]
-    lib_artists_ranked = [(s, a) for s, a in ranked if a in library_artists]
-    # Take 50% extra candidates as buffer so the build loop can backfill
-    # when artists produce 0 tracks (not found on Apple Music, all deduped, etc.)
-    new_buf = min(len(new_artists), int(new_target * 1.5))
-    lib_buf = min(len(lib_artists_ranked), int(lib_target * 1.5))
-    ranked = (new_artists[:new_buf] + lib_artists_ranked[:lib_buf])
-    ranked.sort(key=lambda x: (-x[0], x[1]))
-
-    top_artists = ranked  # preserve for explanation report below
-    playlist_size = len(ranked)
-
-    log.info("\n  Top %d candidates (%d new × %d tracks, %d library × %d tracks = %d tracks):",
-             len(top_artists),
-             min(new_target, len(new_artists)), NEW_TRACKS_PER,
-             min(lib_target, len(lib_artists_ranked)), LIB_TRACKS_PER,
-             min(new_target, len(new_artists)) * NEW_TRACKS_PER +
-             min(lib_target, len(lib_artists_ranked)) * LIB_TRACKS_PER)
-    log.info("  %-4s  %-40s  %-8s  %s", "Rank", "Artist", "Score", "Type")
-    log.info("  %s", "-" * 65)
-    for i, (score, name) in enumerate(top_artists, 1):
-        tag = "library" if name in library_artists else "new"
-        log.info("  %-4d  %-40s  %.4f  %s", i, name, score, tag)
+    new_pool = [(s, a) for s, a in ranked if a not in library_artists]
+    lib_pool = [(s, a) for s, a in ranked if a in library_artists]
+    new_idx = 0
+    lib_idx = 0
+    log.info("\n  Candidate pools: %d new, %d library (target %d tracks, %.0f%% new)",
+             len(new_pool), len(lib_pool), TOTAL_TRACKS, NEW_RATIO * 100)
 
     # ── Step 9: Build playlist ───────────────────────────────────────────────
     log.info("\nStep 7: Building playlist...")
@@ -1147,17 +1128,28 @@ end tell
     log.info("  Pre-seeded %d library tracks into dedup set.", library_track_count)
 
     offered_tracks: set = set()  # (artist, track_name) for this round's snapshot
-    artist_idx = 0
     slots_filled = 0
+    new_tracks_added = 0
+    lib_tracks_added = 0
+    top_artists = []  # populated as artists are actually used
 
     total_tracks_target = TOTAL_TRACKS
 
-    while slots_filled < total_tracks_target and artist_idx < len(ranked):
-        _score, artist = ranked[artist_idx]
-        artist_idx += 1
-
-        # Library artists get 1 track, new artists get 2
-        tracks_per_artist = LIB_TRACKS_PER if artist in library_artists else NEW_TRACKS_PER
+    while slots_filled < total_tracks_target:
+        # Pick the pool that is furthest below its ratio target (soft fill)
+        new_exhausted = new_idx >= len(new_pool)
+        lib_exhausted = lib_idx >= len(lib_pool)
+        if new_exhausted and lib_exhausted:
+            break
+        current_new_ratio = new_tracks_added / max(slots_filled, 1)
+        if not new_exhausted and (lib_exhausted or current_new_ratio < NEW_RATIO):
+            _score, artist = new_pool[new_idx]
+            new_idx += 1
+            tracks_per_artist = NEW_TRACKS_PER
+        else:
+            _score, artist = lib_pool[lib_idx]
+            lib_idx += 1
+            tracks_per_artist = LIB_TRACKS_PER
 
         # Tiered track sourcing: Last.fm top 50 first, then iTunes catalog
         lastfm_tracks = fetch_top_tracks(artist, api_key, limit=50) if api_key else []
@@ -1306,18 +1298,43 @@ end tell
             tag = "library" if artist in library_artists else "new"
             log.info("  Added %d tracks for %s [%s]", added_count, artist, tag)
             slots_filled += added_count
+            top_artists.append((_score, artist))
+            if artist in library_artists:
+                lib_tracks_added += added_count
+            else:
+                new_tracks_added += added_count
         else:
             log.warning("  No tracks added for %s", artist)
 
         time.sleep(0.5)  # Rate limiting between artists
 
-    # Save cross-round state
+    # Save cross-round state (before potential exit so partial runs don't
+    # corrupt dedup/strike data)
     _save_offered_tracks(offered_path, offered_entries)
     _save_search_strikes(strikes_path, strikes)
 
+    # Check if we hit the target
+    if slots_filled < total_tracks_target:
+        log.error(
+            "ERROR: Only filled %d of %d target tracks (%d new, %d library) "
+            "-- exhausted all %d new candidates (tried %d) and "
+            "%d library candidates (tried %d).",
+            slots_filled, total_tracks_target,
+            new_tracks_added, lib_tracks_added,
+            len(new_pool), new_idx, len(lib_pool), lib_idx,
+        )
+        sys.exit(1)
+
     round_artists = {e["artist"] for e in offered_entries if e.get("round") == current_round}
-    log.info("  Playlist '%s': %d tracks for %d artists (of %d ranked).",
-             playlist_name, slots_filled, len(round_artists), len(ranked))
+    log.info("  Playlist '%s': %d tracks for %d artists (%d new, %d library).",
+             playlist_name, slots_filled, len(round_artists),
+             new_tracks_added, lib_tracks_added)
+    log.info("\n  Artists used:")
+    log.info("  %-4s  %-40s  %-8s  %s", "Rank", "Artist", "Score", "Type")
+    log.info("  %s", "-" * 65)
+    for i, (score, name) in enumerate(top_artists, 1):
+        tag = "library" if name in library_artists else "new"
+        log.info("  %-4d  %-40s  %.4f  %s", i, name, score, tag)
 
     # ── Post-build playlist count verification ──────────────────────────────
     verify_script = f'''
