@@ -803,14 +803,15 @@ def check_ai_artist(name, filter_entry, ai_blocklist, ai_allowlist):
     Side effect:
         Updates filter_entry with ai_check and ai_check_date fields.
     """
-    name = name.strip().lower()
+    from adaptive_engine import _normalize_artist
+    name_norm = _normalize_artist(name)
 
     # Step 1: Allowlist
-    if name in ai_allowlist:
+    if name_norm in ai_allowlist:
         return False, "allowlist"
 
     # Step 2: Static blocklist (always checked, overrides cache)
-    if name in ai_blocklist:
+    if name_norm in ai_blocklist:
         return True, "blocked_static"
 
     # Step 3: Cache
