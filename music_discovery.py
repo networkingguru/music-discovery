@@ -728,13 +728,19 @@ def save_cache(cache, cache_path):
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
 def load_blocklist(path):
-    """Load file-based blocklist. Returns a set of lowercase names."""
+    """Load file-based blocklist. Returns a set of normalized names.
+
+    NOTE: Normalization is applied at load time only (for comparison).
+    save_blocklist still writes the original raw names from the blocked set.
+    Do NOT feed the normalized output of this function back to save_blocklist.
+    """
+    from adaptive_engine import _normalize_artist
     path = pathlib.Path(path)
     if not path.exists():
         return set()
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return set(json.load(f).get("blocked", []))
+            return set(_normalize_artist(name) for name in json.load(f).get("blocked", []))
     except (json.JSONDecodeError, KeyError):
         return set()
 
@@ -746,8 +752,9 @@ def save_blocklist(blocked_set, path):
 def load_user_blocklist(path):
     """Load a plain-text blocklist file (one artist per line).
     Blank lines and lines starting with # are ignored.
-    Names are lowercased for case-insensitive matching.
+    Names are normalized for case/punctuation-insensitive matching.
     Returns an empty set if file does not exist."""
+    from adaptive_engine import _normalize_artist
     path = pathlib.Path(path)
     if not path.exists():
         return set()
@@ -756,7 +763,7 @@ def load_user_blocklist(path):
         for line in f:
             line = line.strip()
             if line and not line.startswith("#"):
-                names.add(line.lower())
+                names.add(_normalize_artist(line))
     return names
 
 def load_ai_blocklist(path):
