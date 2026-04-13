@@ -416,7 +416,8 @@ def parse_library(xml_path):
 
 def parse_library_jxa():
     """Read favorited tracks from Music.app via JXA, return {artist: count} dict.
-    Artists are lowercase. Raises RuntimeError on failure."""
+    Artists are normalized via _normalize_artist. Raises RuntimeError on failure."""
+    from adaptive_engine import _normalize_artist
     script = '''
 var music = Application("Music");
 var lib = music.libraryPlaylists[0];
@@ -435,7 +436,7 @@ JSON.stringify(artists);
     for artist in artist_list:
         if not isinstance(artist, str):
             continue
-        artist = artist.strip().lower()
+        artist = _normalize_artist(artist)
         if artist:
             counts[artist] = counts.get(artist, 0) + 1
     return counts
@@ -929,6 +930,7 @@ def fetch_filter_data(artist, api_key):
              "tag_count": int, "mb_type": str|None, "mb_has_releases": bool},
     or {} on any failure.
     Never raises — network errors and missing data return {} or None gracefully."""
+    from adaptive_engine import _normalize_artist
     try:
         # Step 1: resolve canonical name via search
         canonical = artist
@@ -1008,7 +1010,7 @@ def fetch_filter_data(artist, api_key):
                     top = artists[0]
                     score = top.get("score", 0)
                     mb_name = top.get("name", "")
-                    if score >= 80 and mb_name.strip().lower() == artist.strip().lower():
+                    if score >= 80 and _normalize_artist(mb_name) == _normalize_artist(artist):
                         mb_type = top.get("type")
                         # Search API doesn't return releases — do MBID lookup
                         found_id = top.get("id", "")
@@ -1116,7 +1118,8 @@ def _is_original_recording(result: dict) -> bool:
     collection_artist = result.get("collectionArtistName", "")
     if collection_artist:
         artist = result.get("artistName", "")
-        if collection_artist.lower().strip() != artist.lower().strip():
+        from adaptive_engine import _normalize_artist
+        if _normalize_artist(collection_artist) != _normalize_artist(artist):
             return False
 
     # 2. Track name variant suffix
@@ -1157,7 +1160,8 @@ def search_itunes(artist, track_name):
             return SearchResult(None, searched_ok=False)
         results = resp.json().get("results", [])
         results = [r for r in results if r.get("kind") == "song"]
-        artist_lower = artist.strip().lower()
+        from adaptive_engine import _normalize_artist
+        artist_norm = _normalize_artist(artist)
 
         # Only consider original studio recordings (no fallback to compilations/live)
         originals = [r for r in results if _is_original_recording(r)]
@@ -1167,16 +1171,16 @@ def search_itunes(artist, track_name):
             duration_ms = r.get("trackTimeMillis", 0)
             if duration_ms < 90_000 or duration_ms > 600_000:
                 continue
-            result_artist = r.get("artistName", "").strip().lower()
-            if result_artist == artist_lower:
+            result_artist = _normalize_artist(r.get("artistName", ""))
+            if result_artist == artist_norm:
                 return SearchResult(str(r["trackId"]), True,
                                     r.get("artistName", ""), r.get("trackName", ""))
         for r in originals:
             duration_ms = r.get("trackTimeMillis", 0)
             if duration_ms < 90_000 or duration_ms > 600_000:
                 continue
-            result_artist = r.get("artistName", "").strip().lower()
-            if artist_lower in result_artist or result_artist in artist_lower:
+            result_artist = _normalize_artist(r.get("artistName", ""))
+            if artist_norm in result_artist or result_artist in artist_norm:
                 return SearchResult(str(r["trackId"]), True,
                                     r.get("artistName", ""), r.get("trackName", ""))
         return SearchResult(None, searched_ok=True)
@@ -1200,7 +1204,8 @@ def fetch_artist_catalog(artist):
         if resp.status_code != 200:
             return []
         results = resp.json().get("results", [])
-        artist_lower = artist.strip().lower()
+        from adaptive_engine import _normalize_artist
+        artist_norm = _normalize_artist(artist)
 
         def _collect_tracks(source, artist_low, require_original=False):
             """Filter and dedup tracks from iTunes results."""
@@ -1209,7 +1214,7 @@ def fetch_artist_catalog(artist):
             for r in source:
                 if r.get("kind") != "song":
                     continue
-                ra = r.get("artistName", "").strip().lower()
+                ra = _normalize_artist(r.get("artistName", ""))
                 if ra != artist_low and not (
                     artist_low in ra or ra in artist_low
                 ):
@@ -1227,7 +1232,7 @@ def fetch_artist_catalog(artist):
                 out.append({"name": tn, "artist": r.get("artistName", "")})
             return out
 
-        return _collect_tracks(results, artist_lower, require_original=True)
+        return _collect_tracks(results, artist_norm, require_original=True)
     except Exception as e:
         log.debug(f"fetch_artist_catalog failed for '{artist}': {e}")
         return []
@@ -1613,7 +1618,8 @@ def build_playlist(ranked, api_key, paths, xml_only=False):
     sync_abort = False
     unfindable = set()  # artists where no tracks could be added
     for i, artist in enumerate(top_artists, 1):
-        artist_tracks = [t for t in all_tracks if t["artist"].strip().lower() == artist]
+        from adaptive_engine import _normalize_artist
+        artist_tracks = [t for t in all_tracks if _normalize_artist(t["artist"]) == _normalize_artist(artist)]
         if not artist_tracks:
             continue
         log.info(f"[{i}/{len(top_artists)}] Adding tracks for: {artist}")

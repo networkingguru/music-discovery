@@ -2825,13 +2825,17 @@ class TestSearchItunesOriginalPreference:
         assert result.searched_ok is True
 
     def test_prefers_exact_artist_original_over_fuzzy_original(self, monkeypatch):
-        fuzzy = self._song(1, "The Alan Parsons Project", "Eye in the Sky",
-                           collection="Eye In the Sky")
-        exact = self._song(2, "Alan Parsons Project", "Eye in the Sky",
-                           collection="Eye In the Sky")
+        # "The Alan Parsons Project" normalizes identically to "Alan Parsons Project"
+        # (the 'the' prefix is stripped), so both are exact matches after normalization.
+        # Use a genuinely fuzzy name (suffix appended) vs. the exact name to verify
+        # that exact matches are returned before fuzzy (substring) matches.
+        fuzzy = self._song(1, "Journey & Friends", "Faithfully",
+                           collection="Escape")
+        exact = self._song(2, "Journey", "Faithfully",
+                           collection="Escape")
         monkeypatch.setattr("music_discovery.requests.get",
                             lambda *a, **kw: _fake_itunes_response([fuzzy, exact]))
-        result = md.search_itunes("Alan Parsons Project", "Eye in the Sky")
+        result = md.search_itunes("Journey", "Faithfully")
         assert result.store_id == "2"
 
     def test_prefers_original_fuzzy_over_compilation_exact(self, monkeypatch):
