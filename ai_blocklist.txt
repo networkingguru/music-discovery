@@ -175,3 +175,7 @@ Sleepy John
 
 # ── Sony Music / Yellowstone mood music ──
 # (Sleepy John listed above)
+# auto-blocklisted round 2:
+jinger
+# auto-blocklisted round 3:
+mike & the mechanics

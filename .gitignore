@@ -9,7 +9,25 @@ blocklist.txt
 compare_scoring.py
 scoring_comparison.txt
 .worktrees/
+.claude/
 
 # Apple Music API POC
 *.p8
 similarity_comparison.json
+
+# Training data / model state (keep private)
+feedback_history.json
+affinity_graph.json
+model_weights.json
+weight_model.json
+offered_tracks.json
+offered_features.json
+pre_listen_snapshot.json
+library_faves_snapshot.json
+favorites_snapshot.json
+search_strikes.json
+signal_wargaming_*.json
+tuning_experiment_*.json
+playlist_explanation.txt
+ai_detection_log.txt
+tmp_ai_detection_results.json
