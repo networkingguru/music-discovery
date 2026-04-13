@@ -1,0 +1,21 @@
+Music Discovery — Adaptive Engine Modules
+Proprietary License
+
+Copyright (C) 2026 Brian Hill. All rights reserved.
+
+The compiled engine modules distributed with this software (all .so files)
+are proprietary software. These modules are provided in compiled form only.
+No source code is provided or implied.
+
+PERMITTED:
+  - Use of the compiled modules as part of this Music Discovery tool
+    for personal, non-commercial purposes.
+
+PROHIBITED:
+  - Reverse engineering, decompilation, or disassembly of the compiled modules.
+  - Redistribution of the compiled modules separately from this project.
+  - Use of the compiled modules in any commercial product or service.
+  - Modification or creation of derivative works from the compiled modules.
+
+For commercial licensing inquiries, contact: Brian Hill
+GitHub: https://github.com/networkingguru

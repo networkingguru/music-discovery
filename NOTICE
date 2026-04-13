@@ -1,18 +1,37 @@
 Music Discovery — Adaptive Music Recommendation Engine
 Copyright (C) 2026 Brian Hill
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published
-by the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+This project uses a split license:
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
+OPEN-SOURCE COMPONENTS (all .py source files):
 
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
+  Licensed under the GNU Affero General Public License as published
+  by the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  GNU Affero General Public License for more details.
+
+  You should have received a copy of the GNU Affero General Public License
+  along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+LINKING EXCEPTION (AGPL Section 7 additional permission):
+
+  As a special exception, the copyright holder grants permission to link
+  the AGPL-licensed open-source components of this project with the
+  proprietary compiled engine modules (the .so files), and to distribute
+  the resulting combined work. This exception does not extend the
+  proprietary license to the open-source components, nor does it extend
+  the AGPL to the compiled engine modules.
+
+COMPILED ENGINE MODULES (all .so files):
+
+  Proprietary. All rights reserved. See ENGINE-LICENSE for terms.
+
+  These modules are distributed in compiled form only to protect the
+  adaptive discovery algorithm. No source code is provided or implied.
 
 -------------------------------------------------------------------------------
 COMMERCIAL LICENSING

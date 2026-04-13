@@ -31,3 +31,8 @@ tuning_experiment_*.json
 playlist_explanation.txt
 ai_detection_log.txt
 tmp_ai_detection_results.json
+
+# Cython build artifacts
+build/
+*.c
+.venv/
